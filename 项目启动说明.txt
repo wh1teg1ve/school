@@ -1,0 +1,75 @@
+========================================
+  电商用户画像系统 - 项目启动说明
+========================================
+
+一、环境准备
+
+1. 确保已安装 Python 3.8 及以上版本
+
+2. 安装依赖（在项目目录下执行）：
+   pip install -r requirements.txt
+
+   主要依赖：flask、pandas、numpy、scikit-learn、plotly
+
+
+二、数据来源（二选一）
+
+【方式一：CSV 文件】默认
+• 确保 customer_clusters_simple.csv 在项目根目录
+• 若需重新生成：运行 k-means.ipynb（需 customer_features_complete.csv）
+
+【方式二：MySQL】
+• 1. 安装并启动 MySQL，创建库：CREATE DATABASE customer_profile;
+• 2. 执行导入：python import_csv_to_mysql.py
+     （可修改脚本内 MYSQL_CONFIG 或设置环境变量）
+• 3. 启动 Flask 前设置环境变量启用 MySQL：
+     Windows: set USE_MYSQL=1
+     Linux/Mac: export USE_MYSQL=1
+• 可选环境变量：MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE, MYSQL_TABLE
+
+
+三、启动 Flask 网页
+
+1. 打开终端 / 命令提示符
+
+2. 进入项目目录：
+   cd 项目所在路径
+   例如：cd c:\Users\X\Desktop\school
+
+3. 启动服务：
+   python flask_app.py
+
+4. 在浏览器中访问：
+   http://127.0.0.1:5000
+
+
+四、功能说明
+
+• 首页：客户画像仪表盘，支持按客户 ID、聚类筛选
+• 客户 ID / 姓名：点击可进入客户画像报告
+• 画像报告：指标排名、雷达图、散点图、客户分析、推荐营销方案
+
+
+五、其他脚本（可选）
+
+• import_csv_to_mysql.py     — 将 CSV 导入 MySQL
+• clustering_experiments.py  — K-Means 与 DBSCAN 对比实验
+• run_visualizations.py      — 生成 RFM-BC 雷达图、聚类热力图 HTML
+• web_app.ipynb              — 可视化 Notebook（雷达图、热力图）
+• k-means.ipynb              — K-Means 聚类与结果导出
+• everyuser.ipynb            — 用户画像数据处理
+
+
+六、常见问题
+
+Q: 启动后报错找不到 customer_clusters_simple.csv
+A: 先运行 k-means.ipynb 生成该文件，或确认该文件在项目根目录下
+
+Q: 端口 5000 已被占用
+A: 修改 flask_app.py 最后一行的 port=5000 为其他端口（如 5001）
+
+Q: 依赖安装失败
+A: 可尝试：pip install flask pandas numpy scikit-learn plotly pymysql
+
+Q: 使用 MySQL 时连接失败
+A: 检查 MySQL 服务是否启动，MYSQL_HOST/USER/PASSWORD 是否正确
