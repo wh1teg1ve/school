@@ -9,6 +9,14 @@
   </div>
   <h1>群体 RFM-BC 总览</h1>
 
+  <div class="top-links" style="margin-top: 6px;">
+    <a href="#charts">群体对比图</a>
+    <span class="sep">|</span>
+    <a href="#table">群体概览表</a>
+    <span class="sep">|</span>
+    <a href="#validation">差异验证</a>
+  </div>
+
   <div class="cards">
     <div class="card"><strong>总用户数</strong><div class="v">{{ total_users }}</div></div>
     <div class="card"><strong>群体数量</strong><div class="v">{{ segment_count }}</div></div>
@@ -16,7 +24,7 @@
     <div class="card"><strong>潜在流失客户数</strong><div class="v">{{ churn_count }}</div></div>
   </div>
 
-  <div class="section">
+  <div id="charts" class="section">
     <h2>群体对比图</h2>
     <p class="section-desc">左侧为各群体“指标百分位均值”雷达图，右侧为各群体“关键特征均值（0–100 标准化）”热力图。</p>
     <div class="grid2">
@@ -25,47 +33,203 @@
     </div>
   </div>
 
-  <div class="section">
-    <h2>群体概览表</h2>
-    <p class="section-desc">点击“群体名称”可跳转回首页并自动筛选该群体；点击样本客户可进入客户详情页。</p>
-    <table>
-      <thead>
-        <tr>
-          <th class="left">群体</th>
-          <th>人数</th>
-          <th>占比</th>
-          <th>活跃度均值</th>
-          <th>总消费均值</th>
-          <th>订单数均值</th>
-          <th>用户平均订单价格均值</th>
-          <th>距上次购买(天)中位数</th>
-          <th class="left">优势维度</th>
-          <th class="left">样本客户</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for s in segments %}
-        <tr>
-          <td class="left"><a class="pill" href="{{ s.href }}">{{ s.name }}</a></td>
-          <td>{{ s.count }}</td>
-          <td>{{ s.pct }}%</td>
-          <td>{{ s.activity_avg }}</td>
-          <td>{{ s.sales_avg }}</td>
-          <td>{{ s.orders_avg }}</td>
-          <td>{{ s.aov_avg }}</td>
-          <td>{{ s.last_days_median }}</td>
-          <td class="left">{{ s.strengths }}</td>
-          <td class="left">
-            <div class="sample">
-              {% for u in s.samples %}
-                <a href="/user/{{ u.id }}">{{ u.id }}<span class="sub">（{{ u.name }}）</span></a>
-              {% endfor %}
-            </div>
-          </td>
-        </tr>
+  <div id="table" class="section">
+    <h2>群体概览（卡片版：无需横向滚动）</h2>
+    <p class="section-desc">点击“群体名称”可跳转回首页并自动筛选该群体；点击样本客户可进入客户详情页。该版式把信息拆成卡片，避免表格过宽必须滚动。</p>
+
+    <div class="seg-grid">
+      {% for s in segments %}
+      <div class="seg-card">
+        <div class="seg-title">
+          <div class="name"><a class="pill" href="{{ s.href }}">{{ s.name }}</a></div>
+          <div class="tag" title="{{ s.biz_basis }}">{{ s.biz_name }}</div>
+        </div>
+
+        <div class="seg-kv">
+          <div><div class="k">人数 / 占比</div><div class="v">{{ s.count }}（{{ s.pct }}%）</div></div>
+          <div><div class="k">活跃度均值</div><div class="v">{{ s.activity_avg }}</div></div>
+          <div><div class="k">总消费均值</div><div class="v">{{ s.sales_avg }}</div></div>
+          <div><div class="k">订单数均值</div><div class="v">{{ s.orders_avg }}</div></div>
+          <div><div class="k">购买频率均值</div><div class="v">{{ s.freq_avg }}</div></div>
+          <div><div class="k">用户平均订单价格均值</div><div class="v">{{ s.aov_avg }}</div></div>
+          <div><div class="k">距上次购买(天)中位数</div><div class="v">{{ s.last_days_median }}</div></div>
+          <div><div class="k">流失风险（>60 / >90 天未购）</div><div class="v">{{ s.churn60_pct }} / {{ s.churn90_pct }}</div></div>
+        </div>
+
+        <div class="seg-meta wraptext"><span class="label">优势维度：</span>{{ s.strengths }}</div>
+        <div class="seg-meta wraptext"><span class="label">核心差异（对整体）：</span>{{ s.diff_text }}</div>
+        <div class="seg-meta wraptext"><span class="label">命名依据：</span>{{ s.biz_basis }}</div>
+
+        <div class="seg-meta">
+          <span class="label">样本客户：</span>
+          <span class="sample">
+            {% for u in s.samples %}
+              <a href="/user/{{ u.id }}">{{ u.id }}<span class="sub">（{{ u.name }}）</span></a>
+            {% endfor %}
+          </span>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div id="validation" class="section">
+    <h2>聚类差异合理性验证（量化）</h2>
+    <p class="section-desc">从关键特征的“群体均值最大/最小倍数差异”验证聚类分群确实形成可解释的差异。</p>
+    {% if validation_notes %}
+      <ul class="analysis-list">
+        {% for t in validation_notes %}
+          <li>{{ t }}</li>
         {% endfor %}
-      </tbody>
-    </table>
+      </ul>
+    {% else %}
+      <p class="sub">暂无可用的验证指标（可能缺少关键列）。</p>
+    {% endif %}
+  </div>
+
+  <div class="section">
+    <h2>二、高价值用户分析模块（从“名单”到“特征总结”）</h2>
+    <p class="section-desc">{{ high_value_def }}</p>
+    {% if high_value_common %}
+      <div class="cards">
+        <div class="card"><strong>高价值用户数 / 占比</strong><div class="v">{{ high_value_common.count }}（{{ high_value_common.pct }}%）</div></div>
+        <div class="card"><strong>销售额阈值（80分位）</strong><div class="v">{{ high_value_common.threshold }}</div></div>
+        <div class="card"><strong>平均生命周期(天)</strong><div class="v">{{ "%.1f"|format(high_value_common.avg_lifetime or 0) }}</div></div>
+        <div class="card"><strong>平均购买频率</strong><div class="v">{{ "%.4f"|format(high_value_common.avg_freq or 0) }}</div></div>
+      </div>
+
+      <div class="seg-meta wraptext" style="margin-top:10px;">
+        <span class="label">偏好品类 TOP3：</span>
+        {% for k, v in high_value_common.top_fav.items() %}
+          <span class="pill">{{ k }}：{{ v }}</span>
+        {% endfor %}
+        {% if not high_value_common.top_fav %}<span class="sub">暂无</span>{% endif %}
+      </div>
+
+      <div class="seg-meta wraptext" style="margin-top:8px;">
+        <span class="label">高价值用户的聚类分布：</span>
+        {% for x in high_value_cluster_dist %}
+          <span class="pill">{{ x.cluster }}：{{ x.count }}（{{ x.pct }}%）</span>
+        {% endfor %}
+        {% if not high_value_cluster_dist %}<span class="sub">暂无</span>{% endif %}
+      </div>
+
+      <div class="seg-meta" style="margin-top:10px;">
+        <span class="label">高价值用户 Top5（示例）：</span>
+        <div class="table-wrap" style="margin-top:8px;">
+          <table class="table-dense table-small">
+            <thead>
+              <tr>
+                <th>客户</th><th>总销售额</th><th>订单数</th><th>客单价</th><th>群体</th><th>偏好品类</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for u in high_value_users %}
+              <tr>
+                <td class="left"><a href="/user/{{ u.id }}">{{ u.id }}</a><span class="sub">（{{ u.name }}）</span></td>
+                <td>{{ "%.2f"|format(u.sales) }}</td>
+                <td>{{ "%.0f"|format(u.orders) }}</td>
+                <td>{{ "%.2f"|format(u.aov) }}</td>
+                <td class="left">{{ u.cluster }}</td>
+                <td class="left">{{ u.fav }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    {% else %}
+      <p class="sub">缺少 Total_Sales，无法计算高价值模块。</p>
+    {% endif %}
+  </div>
+
+  <div class="section">
+    <h2>三、高流失风险用户模块（特征拆解 + 阈值预警）</h2>
+    <p class="section-desc">{{ churn_def }}</p>
+    <div class="cards">
+      <div class="card"><strong>规则命中人数</strong><div class="v">{{ churn_rule_count }}</div></div>
+      <div class="card"><strong>>90 天未购人数</strong><div class="v">{{ churn90_count }}</div></div>
+    </div>
+    <div class="seg-meta wraptext" style="margin-top:10px;">
+      <span class="label">90天未购用户的聚类分布：</span>
+      {% for x in churn90_cluster_dist %}
+        <span class="pill">{{ x.cluster }}：{{ x.count }}（{{ x.pct }}%）</span>
+      {% endfor %}
+      {% if not churn90_cluster_dist %}<span class="sub">暂无</span>{% endif %}
+    </div>
+    <div class="seg-meta" style="margin-top:10px;">
+      <span class="label">90天未购用户样本（最多10人）：</span>
+      <div class="table-wrap" style="margin-top:8px;">
+        <table class="table-dense table-small">
+          <thead>
+            <tr>
+              <th>客户</th><th>群体</th><th>总销售额</th><th>购买频率</th><th>距上次购买(天)</th><th>最后偏好品类</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for u in churn90_details %}
+            <tr>
+              <td class="left"><a href="/user/{{ u.id }}">{{ u.id }}</a><span class="sub">（{{ u.name }}）</span></td>
+              <td class="left">{{ u.cluster }}</td>
+              <td>{{ "%.2f"|format(u.sales) }}</td>
+              <td>{{ "%.4f"|format(u.freq) }}</td>
+              <td>{{ "%.0f"|format(u.last_days) }}</td>
+              <td class="left">{{ u.fav }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>四、高互动用户模块（定义 + 价值关联）</h2>
+    <p class="section-desc">{{ engage_def }}</p>
+    {% if engage_summary %}
+      <div class="cards">
+        <div class="card"><strong>高互动用户数 / 占比</strong><div class="v">{{ engage_summary.count }}（{{ engage_summary.pct }}%）</div></div>
+        <div class="card"><strong>互动阈值（80分位）</strong><div class="v">{{ engage_summary.threshold }}</div></div>
+        <div class="card"><strong>平均总销售额</strong><div class="v">{{ engage_summary.avg_sales }}</div></div>
+        <div class="card"><strong>平均客单价</strong><div class="v">{{ engage_summary.avg_aov }}</div></div>
+      </div>
+      <div class="seg-meta wraptext" style="margin-top:10px;">
+        <span class="label">高互动用户的聚类分布：</span>
+        {% for x in engage_cluster_dist %}
+          <span class="pill">{{ x.cluster }}：{{ x.count }}（{{ x.pct }}%）</span>
+        {% endfor %}
+      </div>
+      <div class="seg-meta wraptext" style="margin-top:8px;">
+        <span class="label">高互动→高价值关联：</span>
+        {% if engage_high_value_overlap is not none %}
+          <span class="pill">高互动用户中 {{ engage_high_value_overlap }}% 同时属于高价值用户</span>
+        {% else %}
+          <span class="sub">缺少 Total_Sales 或阈值，无法计算</span>
+        {% endif %}
+      </div>
+    {% else %}
+      <p class="sub">缺少 Total_Engagement_Score，无法计算高互动模块。</p>
+    {% endif %}
+  </div>
+
+  <div class="section">
+    <h2>五、用户特征统计模块（分布分析）</h2>
+    <p class="section-desc">补充分位数、区间分布与极值，避免均值受极端值影响导致结论偏差。</p>
+    {% if stats_summary %}
+      <div class="cards">
+        <div class="card"><strong>销售额均值 / 中位数</strong><div class="v">{{ stats_summary.sales_mean }} / {{ stats_summary.sales_median }}</div></div>
+        <div class="card"><strong>销售额极值（min/max）</strong><div class="v">{{ stats_summary.sales_min }} / {{ stats_summary.sales_max }}</div></div>
+        <div class="card"><strong>销售额分位数（25/50/75%）</strong><div class="v">{{ stats_summary.sales_quantiles.p25 }} / {{ stats_summary.sales_quantiles.p50 }} / {{ stats_summary.sales_quantiles.p75 }}</div></div>
+      </div>
+      <div class="seg-meta wraptext" style="margin-top:10px;">
+        <span class="label">订单数区间分布：</span>
+        {% for k, v in stats_summary.orders_bins.items() %}
+          <span class="pill">{{ k }} 单：{{ v }}%</span>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="sub">缺少关键数值列，无法计算分布统计。</p>
+    {% endif %}
   </div>
 {% endblock %}
 

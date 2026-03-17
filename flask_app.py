@@ -263,6 +263,71 @@ def get_profiles_scored_cached(ttl_sec: float = 5.0) -> pd.DataFrame:
 
 # === Flask 路由 ===
 
+def _pick_biz_name_by_segment_rank(
+    seg_sales: float | None,
+    seg_freq: float | None,
+    seg_churn90: float | None,
+    all_sales: list[float],
+    all_freq: list[float],
+    all_churn90: list[float],
+) -> tuple[str, str]:
+    """
+    基于“群体之间的相对排名”生成业务命名，避免用整体均值倍数导致命名趋同。
+    返回：(业务命名, 命名依据文本)
+    """
+    def _percentile_rank(v: float | None, arr: list[float], higher_better: bool) -> float | None:
+        """
+        返回 v 在 arr 中的分位（0~1），越大代表“越靠前/越好”。
+        higher_better=True：值越大越好；False：值越小越好（如流失风险）。
+        """
+        if v is None or pd.isna(v) or not arr:
+            return None
+        vals = [float(x) for x in arr if x is not None and not pd.isna(x)]
+        if not vals:
+            return None
+        n = len(vals)
+        if n == 1:
+            return 1.0
+        if higher_better:
+            # 统计 <= v 的比例作为分位
+            r = sum(1 for x in vals if x <= float(v)) / n
+        else:
+            # 值越小越好：统计 >= v 的比例作为“好分位”
+            r = sum(1 for x in vals if x >= float(v)) / n
+        return max(0.0, min(1.0, float(r)))
+
+    # 销售额/频率：越高越好；churn90：越低越好（因此 higher_better=False）
+    sales_pos = _percentile_rank(seg_sales, all_sales, higher_better=True)
+    freq_pos = _percentile_rank(seg_freq, all_freq, higher_better=True)
+    churn_pos = _percentile_rank(seg_churn90, all_churn90, higher_better=False)
+
+    # 用更宽松阈值拉开 5 类区分度（群体数量通常不大）
+    def _hi(p): return p is not None and p >= 0.70
+    def _lo(p): return p is not None and p <= 0.30
+
+    if _hi(sales_pos) and _hi(churn_pos):
+        name = "高价值高忠诚用户"
+    elif _hi(sales_pos) and _lo(churn_pos):
+        name = "高价值需挽留用户"
+    elif _lo(sales_pos) and _lo(churn_pos):
+        name = "低价值高流失风险用户"
+    elif _hi(freq_pos) and _lo(sales_pos):
+        name = "中低价值潜力用户"
+    elif _hi(freq_pos):
+        name = "中价值活跃增长用户"
+    else:
+        name = "低价值低活跃用户"
+
+    basis_parts = []
+    if sales_pos is not None:
+        basis_parts.append(f"销售额分位 {sales_pos:.0%}")
+    if freq_pos is not None:
+        basis_parts.append(f"频率分位 {freq_pos:.0%}")
+    if churn_pos is not None:
+        basis_parts.append(f"低流失分位 {churn_pos:.0%}")
+    basis = "；".join(basis_parts) if basis_parts else "基于群体相对排名判定"
+    return name, basis
+
 def _prepare_X_for_clustering(df_raw: pd.DataFrame) -> tuple[np.ndarray, list[str]]:
     """为聚类实验准备特征矩阵：选择可用列、填充缺失值并做 Min-Max 归一化到 [0,1]。"""
     from sklearn.preprocessing import MinMaxScaler
@@ -1134,6 +1199,7 @@ def user_profile(customer_id):
 def index():
     # 读取全量用户画像，并附加“活跃度分数/档位”两列
     df = _add_activity_columns(get_profiles_scored_cached())
+    df_full = df.copy()
 
     # 读取筛选和排序参数（客户 ID / 群体 / 排序字段 / 升降序 / 分页）
     customer_id = request.args.get("customer_id", "").strip() or None
@@ -1216,6 +1282,97 @@ def index():
                 margin=dict(l=40, r=20, t=40, b=40),
             )
             cluster_bar_html = fig.to_html(include_plotlyjs="cdn", full_html=False)
+
+    # 群体核心特征概览（按筛选显示）：仅当筛选了某个群体时展示该群体概览
+    selected_segment = None
+    if cluster and cluster_key_col is not None and cluster_key_col in df_full.columns and not df_full.empty:
+        def _mean_num(frame: pd.DataFrame, col: str) -> float:
+            return float(pd.to_numeric(frame[col], errors="coerce").mean())
+
+        overall_sales = _mean_num(df_full, "Total_Sales") if "Total_Sales" in df_full.columns else np.nan
+        overall_orders = _mean_num(df_full, "Total_Orders") if "Total_Orders" in df_full.columns else np.nan
+        overall_freq = _mean_num(df_full, "Purchase_Frequency") if "Purchase_Frequency" in df_full.columns else np.nan
+
+        # 用“群体之间的相对排名”做业务命名（避免整体均值被极端值拉偏导致命名趋同）
+        grp_full = df_full.groupby(cluster_key_col, dropna=False)
+        all_sales = [
+            _mean_num(_g, "Total_Sales") for _seg, _g in grp_full
+            if "Total_Sales" in _g.columns
+        ]
+        all_freq = [
+            _mean_num(_g, "Purchase_Frequency") for _seg, _g in grp_full
+            if "Purchase_Frequency" in _g.columns
+        ]
+        all_churn90 = [
+            float((pd.to_numeric(_g["Last_Purchase_Days_Ago"], errors="coerce") > 90).mean()) * 100.0
+            for _seg, _g in grp_full
+            if "Last_Purchase_Days_Ago" in _g.columns
+        ]
+
+        def _safe_ratio(a: float, b: float) -> float | None:
+            if b is None or pd.isna(b) or b == 0 or a is None or pd.isna(a):
+                return None
+            return float(a) / float(b)
+
+        def _pct(series: pd.Series, thr: float) -> float:
+            s = pd.to_numeric(series, errors="coerce")
+            if s.dropna().empty:
+                return 0.0
+            return round(float((s > thr).mean()) * 100.0, 1)
+
+        # 命名逻辑改为：由群体之间的相对排名决定（更稳定、更容易拉开区分度）
+
+        # 只计算当前筛选群体的概览（不再一直展示全部群体）
+        mask_label = df_full[cluster_key_col].astype(str) == str(cluster)
+        mask_cluster = df_full["Cluster"].astype(str) == str(cluster) if "Cluster" in df_full.columns else False
+        gseg = df_full[mask_label | mask_cluster]
+        if not gseg.empty:
+            name = str(cluster)
+            cnt = int(len(gseg))
+            pct = round(cnt / len(df_full) * 100.0, 1) if len(df_full) else 0.0
+            href = "/?cluster=" + quote(name, safe="")
+
+            sales_avg = _mean_num(gseg, "Total_Sales") if "Total_Sales" in gseg.columns else np.nan
+            orders_avg = _mean_num(gseg, "Total_Orders") if "Total_Orders" in gseg.columns else np.nan
+            freq_avg = _mean_num(gseg, "Purchase_Frequency") if "Purchase_Frequency" in gseg.columns else np.nan
+            churn60 = _pct(gseg["Last_Purchase_Days_Ago"], 60) if "Last_Purchase_Days_Ago" in gseg.columns else 0.0
+            churn90 = _pct(gseg["Last_Purchase_Days_Ago"], 90) if "Last_Purchase_Days_Ago" in gseg.columns else 0.0
+
+            sales_r = _safe_ratio(sales_avg, overall_sales)
+            orders_r = _safe_ratio(orders_avg, overall_orders)
+            freq_r = _safe_ratio(freq_avg, overall_freq)
+            biz, biz_basis = _pick_biz_name_by_segment_rank(
+                seg_sales=None if pd.isna(sales_avg) else float(sales_avg),
+                seg_freq=None if pd.isna(freq_avg) else float(freq_avg),
+                seg_churn90=float(churn90),
+                all_sales=all_sales,
+                all_freq=all_freq,
+                all_churn90=all_churn90,
+            )
+
+            diff_parts = []
+            if sales_r is not None:
+                diff_parts.append(f"销售额≈整体{sales_r:.2f}×")
+            if orders_r is not None:
+                diff_parts.append(f"订单数≈整体{orders_r:.2f}×")
+            if freq_r is not None:
+                diff_parts.append(f"频率≈整体{freq_r:.2f}×")
+            diff_parts.append(f">90天未购{churn90:.1f}%")
+
+            selected_segment = {
+                "name": name,
+                "href": href,
+                "biz_name": biz,
+                "biz_basis": biz_basis,
+                "count": cnt,
+                "pct": pct,
+                "sales_avg": "-" if pd.isna(sales_avg) else f"{sales_avg:,.2f}",
+                "orders_avg": "-" if pd.isna(orders_avg) else f"{orders_avg:,.2f}",
+                "freq_avg": "-" if pd.isna(freq_avg) else f"{freq_avg:,.4f}",
+                "churn60": f"{churn60:.1f}%",
+                "churn90": f"{churn90:.1f}%",
+                "diff_text": "；".join(diff_parts),
+            }
 
     # 按客户 ID 和群体进行筛选（对筛选后的子集再做排序和分页）
     if customer_id:
@@ -1345,6 +1502,7 @@ def index():
         high_value_count=high_value_count,
         churn_count=churn_count,
         cluster_bar_html=cluster_bar_html,
+        selected_segment=selected_segment,
     )
 
 
@@ -1473,9 +1631,42 @@ def segment_overview():
     # “最近购买”是越小越好，这里直接用 Last_Purchase_Days_Ago 的反向标准化做群体图展示
     has_last = "Last_Purchase_Days_Ago" in df.columns
 
-    # 5) 群体统计表（均值/中位数 + 优势维度 + 样本客户）
+    # 5) 群体统计表（均值/中位数 + 核心特征对比 + 业务命名 + 样本客户）
     segments = []
     grp = df.groupby(seg_col, dropna=False)
+
+    # --- 核心特征对比：用于论文中的“差异解释/合理性验证” ---
+    def _mean_num(frame: pd.DataFrame, col: str) -> float:
+        return float(pd.to_numeric(frame[col], errors="coerce").mean())
+
+    overall_sales = _mean_num(df, "Total_Sales") if "Total_Sales" in df.columns else np.nan
+    overall_orders = _mean_num(df, "Total_Orders") if "Total_Orders" in df.columns else np.nan
+    overall_freq = _mean_num(df, "Purchase_Frequency") if "Purchase_Frequency" in df.columns else np.nan
+
+    def _safe_ratio(a: float, b: float) -> float | None:
+        if b is None or pd.isna(b) or b == 0 or a is None or pd.isna(a):
+            return None
+        return float(a) / float(b)
+
+    def _pct(series: pd.Series, thr: float) -> float:
+        s = pd.to_numeric(series, errors="coerce")
+        if s.dropna().empty:
+            return 0.0
+        return round(float((s > thr).mean()) * 100.0, 1)
+
+    # 业务命名不再使用“整体均值倍数阈值”（容易因为极端值导致命名趋同），改为“群体之间的分位/排名”
+
+    seg_core = {}
+    for _seg_name, _g in grp:
+        key = str(_seg_name)
+        s_avg = _mean_num(_g, "Total_Sales") if "Total_Sales" in _g.columns else np.nan
+        f_avg = _mean_num(_g, "Purchase_Frequency") if "Purchase_Frequency" in _g.columns else np.nan
+        c90 = _pct(_g["Last_Purchase_Days_Ago"], 90) if "Last_Purchase_Days_Ago" in _g.columns else 0.0
+        seg_core[key] = {"sales": s_avg, "freq": f_avg, "churn90": c90}
+
+    all_sales = [v["sales"] for v in seg_core.values() if not pd.isna(v["sales"])]
+    all_freq = [v["freq"] for v in seg_core.values() if not pd.isna(v["freq"])]
+    all_churn90 = [v["churn90"] for v in seg_core.values()]
     for seg_name, g in grp:
         name = str(seg_name)
         cnt = int(len(g))
@@ -1524,6 +1715,37 @@ def segment_overview():
             if pd.notna(r.get("Customer_ID"))
         ]
 
+        # 核心特征均值与风险：用于“聚类核心区别”的量化说明
+        sales_avg_num = _mean_num(g, "Total_Sales") if "Total_Sales" in g.columns else np.nan
+        orders_avg_num = _mean_num(g, "Total_Orders") if "Total_Orders" in g.columns else np.nan
+        freq_avg_num = _mean_num(g, "Purchase_Frequency") if "Purchase_Frequency" in g.columns else np.nan
+
+        churn60 = _pct(g["Last_Purchase_Days_Ago"], 60) if "Last_Purchase_Days_Ago" in g.columns else 0.0
+        churn90 = _pct(g["Last_Purchase_Days_Ago"], 90) if "Last_Purchase_Days_Ago" in g.columns else 0.0
+
+        sales_ratio = _safe_ratio(sales_avg_num, overall_sales)
+        orders_ratio = _safe_ratio(orders_avg_num, overall_orders)
+        freq_ratio = _safe_ratio(freq_avg_num, overall_freq)
+
+        biz_name, biz_basis = _pick_biz_name_by_segment_rank(
+            seg_sales=None if pd.isna(sales_avg_num) else float(sales_avg_num),
+            seg_freq=None if pd.isna(freq_avg_num) else float(freq_avg_num),
+            seg_churn90=float(churn90),
+            all_sales=all_sales,
+            all_freq=all_freq,
+            all_churn90=all_churn90,
+        )
+
+        diff_bits = []
+        if sales_ratio is not None:
+            diff_bits.append(f"销售额≈整体{sales_ratio:.2f}×")
+        if orders_ratio is not None:
+            diff_bits.append(f"订单数≈整体{orders_ratio:.2f}×")
+        if freq_ratio is not None:
+            diff_bits.append(f"频率≈整体{freq_ratio:.2f}×")
+        diff_bits.append(f">90天未购{churn90:.1f}%")
+        diff_text = "；".join(diff_bits)
+
         segments.append(
             {
                 "name": name,
@@ -1536,12 +1758,46 @@ def segment_overview():
                 "aov_avg": _mean("Avg_Order_Value"),
                 "last_days_median": _median("Last_Purchase_Days_Ago"),
                 "strengths": strengths,
+                "freq_avg": _mean("Purchase_Frequency"),
+                "churn60_pct": f"{churn60:.1f}%",
+                "churn90_pct": f"{churn90:.1f}%",
+                "biz_name": biz_name,
+                "biz_basis": biz_basis,
+                "diff_text": diff_text,
                 "samples": samples,
             }
         )
 
     # 排序：按人数占比从高到低
     segments.sort(key=lambda x: x["count"], reverse=True)
+
+    # 5.1) 合理性验证：关键指标在不同群体之间是否存在“量级差异”
+    validation_notes: list[str] = []
+    key_labels = [
+        ("Total_Sales", "平均销售额"),
+        ("Total_Orders", "平均订单数"),
+        ("Purchase_Frequency", "购买频率"),
+        ("Last_Purchase_Days_Ago", "距上次购买(天)"),
+    ]
+    for col, label in key_labels:
+        if col not in df.columns:
+            continue
+        vals = []
+        for seg_name, g in grp:
+            v = float(pd.to_numeric(g[col], errors="coerce").mean())
+            if pd.isna(v):
+                continue
+            vals.append((str(seg_name), v))
+        if len(vals) < 2:
+            continue
+        vals.sort(key=lambda x: x[1])
+        min_name, min_v = vals[0]
+        max_name, max_v = vals[-1]
+        if min_v == 0:
+            continue
+        validation_notes.append(
+            f"{label}：最大群体「{max_name}」({max_v:,.2f}) vs 最小群体「{min_name}」({min_v:,.2f})，差异约 {max_v/min_v:.2f} 倍"
+        )
 
     # 6) 雷达图：各群体的“指标百分位均值”（0-100）
     radar_html = "<p class='sub'>暂无数据用于绘制雷达图。</p>"
@@ -1645,6 +1901,156 @@ def segment_overview():
         )
         heatmap_html = fig_h.to_html(include_plotlyjs=False, full_html=False)
 
+    # 8) 论文模块：高价值用户 / 高流失风险用户 / 高互动用户 / 分布统计
+    def _num(s: pd.Series) -> pd.Series:
+        return pd.to_numeric(s, errors="coerce")
+
+    # ---- 高价值用户：按 Total_Sales 前 20% ----
+    high_value_def = "高价值用户定义：按总销售额（Total_Sales）从高到低取前 20%（80 分位阈值）。"
+    high_value_threshold = None
+    high_value_common = {}
+    high_value_users = []
+    high_value_cluster_dist = []
+    if "Total_Sales" in df.columns:
+        sales = _num(df["Total_Sales"]).fillna(0.0)
+        high_value_threshold = float(sales.quantile(0.80))
+        hv = df[sales >= high_value_threshold].copy()
+        hv_top = hv.sort_values(by="Total_Sales", ascending=False).head(5)
+        for _, r in hv_top.iterrows():
+            high_value_users.append(
+                {
+                    "id": str(r.get("Customer_ID")),
+                    "name": str(r.get("Customer_Name") or "-"),
+                    "sales": float(_num(pd.Series([r.get("Total_Sales")])).iloc[0] or 0.0),
+                    "orders": float(_num(pd.Series([r.get("Total_Orders")])).iloc[0] or 0.0) if "Total_Orders" in hv.columns else 0.0,
+                    "aov": float(_num(pd.Series([r.get("Avg_Order_Value")])).iloc[0] or 0.0) if "Avg_Order_Value" in hv.columns else 0.0,
+                    "cluster": str(r.get("Cluster_Label") or r.get("Cluster") or "-"),
+                    "fav": str(r.get("Favorite_Product") or "-"),
+                }
+            )
+
+        def _avg(frame: pd.DataFrame, col: str) -> float | None:
+            if col not in frame.columns:
+                return None
+            v = float(_num(frame[col]).mean())
+            return None if pd.isna(v) else v
+
+        def _med(frame: pd.DataFrame, col: str) -> float | None:
+            if col not in frame.columns:
+                return None
+            v = float(_num(frame[col]).median())
+            return None if pd.isna(v) else v
+
+        top_fav = {}
+        if "Favorite_Product" in hv.columns:
+            top_fav = hv["Favorite_Product"].astype(str).value_counts().head(3).to_dict()
+
+        high_value_common = {
+            "count": int(len(hv)),
+            "pct": round(len(hv) / len(df) * 100.0, 1) if len(df) else 0.0,
+            "threshold": round(high_value_threshold, 2),
+            "avg_lifetime": _avg(hv, "Customer_Lifetime_Days") or _avg(hv, "Customer_Lifetime"),
+            "avg_freq": _avg(hv, "Purchase_Frequency"),
+            "median_last_days": _med(hv, "Last_Purchase_Days_Ago"),
+            "top_fav": top_fav,
+        }
+
+        seg_col_hv = "Cluster_Label" if "Cluster_Label" in hv.columns else ("Cluster" if "Cluster" in hv.columns else None)
+        if seg_col_hv and not hv.empty:
+            vc = hv[seg_col_hv].astype(str).value_counts(dropna=False)
+            for k, cnt in vc.items():
+                high_value_cluster_dist.append(
+                    {"cluster": str(k), "count": int(cnt), "pct": round(int(cnt) / len(hv) * 100.0, 1)}
+                )
+
+    # ---- 高流失风险：阈值规则 + >90 天未购拆解 ----
+    churn_def = "高流失风险阈值：购买频率 < 0.035 且 距上次购买天数 > 60；并统计 >90 天未购用户。"
+    last_days_series = None
+    if "Last_Purchase_Days_Ago" in df.columns:
+        last_days_series = _num(df["Last_Purchase_Days_Ago"]).fillna(0.0)
+    elif "Days_Since_Last_Purchase" in df.columns:
+        last_days_series = _num(df["Days_Since_Last_Purchase"]).fillna(0.0)
+    else:
+        last_days_series = pd.Series([0.0] * len(df))
+
+    freq_series = _num(df["Purchase_Frequency"]).fillna(0.0) if "Purchase_Frequency" in df.columns else pd.Series([0.0] * len(df))
+    churn_rule_count = int(((freq_series < 0.035) & (last_days_series > 60)).sum())
+
+    churn90_df = df[last_days_series > 90].copy()
+    churn90_count = int(len(churn90_df))
+    churn90_cluster_dist = []
+    churn90_details = []
+    seg_col_churn = "Cluster_Label" if "Cluster_Label" in churn90_df.columns else ("Cluster" if "Cluster" in churn90_df.columns else None)
+    if seg_col_churn and churn90_count:
+        vc = churn90_df[seg_col_churn].astype(str).value_counts(dropna=False)
+        for k, cnt in vc.items():
+            churn90_cluster_dist.append(
+                {"cluster": str(k), "count": int(cnt), "pct": round(int(cnt) / churn90_count * 100.0, 1)}
+            )
+
+    churn90_show = churn90_df.sort_values(by="Total_Sales", ascending=False).head(10) if "Total_Sales" in churn90_df.columns else churn90_df.head(10)
+    for _, r in churn90_show.iterrows():
+        churn90_details.append(
+            {
+                "id": str(r.get("Customer_ID")),
+                "name": str(r.get("Customer_Name") or "-"),
+                "cluster": str(r.get("Cluster_Label") or r.get("Cluster") or "-"),
+                "sales": float(_num(pd.Series([r.get("Total_Sales")])).iloc[0] or 0.0) if "Total_Sales" in df.columns else 0.0,
+                "freq": float(_num(pd.Series([r.get("Purchase_Frequency")])).iloc[0] or 0.0) if "Purchase_Frequency" in df.columns else 0.0,
+                "last_days": float(_num(pd.Series([r.get("Last_Purchase_Days_Ago", r.get("Days_Since_Last_Purchase"))])).iloc[0] or 0.0),
+                "fav": str(r.get("Favorite_Product") or "-"),
+            }
+        )
+
+    # ---- 高互动用户：按 Total_Engagement_Score 前 20% ----
+    engage_def = "高互动用户定义：按互动总分（Total_Engagement_Score）取前 20%（80 分位阈值）。"
+    engage_threshold = None
+    engage_summary = {}
+    engage_cluster_dist = []
+    engage_high_value_overlap = None
+    if "Total_Engagement_Score" in df.columns:
+        eng = _num(df["Total_Engagement_Score"]).fillna(0.0)
+        engage_threshold = float(eng.quantile(0.80))
+        he = df[eng >= engage_threshold].copy()
+        engage_summary = {
+            "count": int(len(he)),
+            "pct": round(len(he) / len(df) * 100.0, 1) if len(df) else 0.0,
+            "threshold": round(engage_threshold, 2),
+            "avg_aov": round(float(_num(he["Avg_Order_Value"]).mean()), 2) if "Avg_Order_Value" in he.columns else None,
+            "avg_sales": round(float(_num(he["Total_Sales"]).mean()), 2) if "Total_Sales" in he.columns else None,
+        }
+        seg_col_eng = "Cluster_Label" if "Cluster_Label" in he.columns else ("Cluster" if "Cluster" in he.columns else None)
+        if seg_col_eng and not he.empty:
+            vc = he[seg_col_eng].astype(str).value_counts(dropna=False)
+            for k, cnt in vc.items():
+                engage_cluster_dist.append(
+                    {"cluster": str(k), "count": int(cnt), "pct": round(int(cnt) / len(he) * 100.0, 1)}
+                )
+        if "Total_Sales" in he.columns and high_value_threshold is not None and not he.empty:
+            he_sales = _num(he["Total_Sales"]).fillna(0.0)
+            engage_high_value_overlap = round(float((he_sales >= high_value_threshold).mean()) * 100.0, 1)
+
+    # ---- 用户特征统计：分位数 + 区间分布 ----
+    stats_summary = {}
+    if "Total_Sales" in df.columns:
+        s = _num(df["Total_Sales"]).fillna(0.0)
+        stats_summary["sales_quantiles"] = {
+            "p25": round(float(s.quantile(0.25)), 2),
+            "p50": round(float(s.quantile(0.50)), 2),
+            "p75": round(float(s.quantile(0.75)), 2),
+        }
+        stats_summary["sales_min"] = round(float(s.min()), 2)
+        stats_summary["sales_max"] = round(float(s.max()), 2)
+        stats_summary["sales_mean"] = round(float(s.mean()), 2)
+        stats_summary["sales_median"] = round(float(s.median()), 2)
+    if "Total_Orders" in df.columns:
+        o = _num(df["Total_Orders"]).fillna(0.0)
+        bins = [0, 50, 80, 9999]
+        labels_bins = ["0-50", "51-80", "81+"]
+        cat = pd.cut(o, bins=bins, labels=labels_bins, right=True, include_lowest=True)
+        vc = cat.value_counts(normalize=True).sort_index()
+        stats_summary["orders_bins"] = {str(k): round(float(v) * 100.0, 1) for k, v in vc.items()}
+
     return render_template(
         "segment_overview.html",
         total_users=total_users,
@@ -1652,8 +2058,23 @@ def segment_overview():
         high_value_count=high_value_count,
         churn_count=churn_count,
         segments=segments,
+        validation_notes=validation_notes,
         radar_html=radar_html,
         heatmap_html=heatmap_html,
+        high_value_def=high_value_def,
+        high_value_common=high_value_common,
+        high_value_users=high_value_users,
+        high_value_cluster_dist=high_value_cluster_dist,
+        churn_def=churn_def,
+        churn_rule_count=churn_rule_count,
+        churn90_count=churn90_count,
+        churn90_cluster_dist=churn90_cluster_dist,
+        churn90_details=churn90_details,
+        engage_def=engage_def,
+        engage_summary=engage_summary,
+        engage_cluster_dist=engage_cluster_dist,
+        engage_high_value_overlap=engage_high_value_overlap,
+        stats_summary=stats_summary,
     )
 
 

@@ -4,11 +4,11 @@
 
 {% block content %}
   <h1>客户画像仪表盘</h1>
-  <p style="margin: -6px 0 18px; color:#666; font-size: 0.92em;">
+  <div class="top-links">
     <a href="/segment-overview">查看群体总览（RFM-BC）</a>
-    <span class="sub">｜</span>
+    <span class="sep">|</span>
     <a href="/algo-compare">K-Means vs DBSCAN 算法对比</a>
-  </p>
+  </div>
 
   <div class="summary">
     <p>
@@ -34,6 +34,23 @@
     <p class="section-desc">帮助快速对比不同客户群体的价值水平。</p>
     {{ cluster_bar_html | safe }}
   </div>
+
+  {% if selected_segment %}
+  <div class="section">
+    <h2 style="font-size:1.05em;margin:0 0 8px;">当前筛选群体：核心特征概览</h2>
+    <p class="section-desc">你已筛选群体 <strong>{{ selected_segment.name }}</strong>（<strong class="nowrap w-240" title="{{ selected_segment.biz_name }}">{{ selected_segment.biz_name }}</strong>）。完整版本请看 <a href="/segment-overview">群体总览</a>。</p>
+    <p class="sub nowrap" style="margin: -4px 0 10px;" title="{{ selected_segment.biz_basis }}">命名依据：{{ selected_segment.biz_basis }}</p>
+    <div class="cards">
+      <div class="card"><strong>人数 / 占比</strong><div class="v">{{ selected_segment.count }}（{{ selected_segment.pct }}%）</div></div>
+      <div class="card"><strong>平均销售额</strong><div class="v">{{ selected_segment.sales_avg }}</div></div>
+      <div class="card"><strong>平均订单数</strong><div class="v">{{ selected_segment.orders_avg }}</div></div>
+      <div class="card"><strong>购买频率</strong><div class="v">{{ selected_segment.freq_avg }}</div></div>
+      <div class="card"><strong>>60天未购</strong><div class="v">{{ selected_segment.churn60 }}</div></div>
+      <div class="card"><strong>>90天未购</strong><div class="v">{{ selected_segment.churn90 }}</div></div>
+    </div>
+    <p class="section-desc nowrap" style="margin-top: 10px;" title="{{ selected_segment.diff_text }}"><strong>核心差异（对整体）：</strong>{{ selected_segment.diff_text }}</p>
+  </div>
+  {% endif %}
 
   <form class="search-form" method="get" action="/">
     <label>客户 ID：</label>

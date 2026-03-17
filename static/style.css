@@ -6,6 +6,11 @@ h2 { margin: 0 0 8px; color: #333; }
 a { color: #1976d2; text-decoration: none; }
 a:hover { text-decoration: underline; }
 
+/* header / nav */
+.top-links { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: -6px 0 18px; color:#666; font-size: 0.92em; }
+.top-links .sep { color: #bbb; }
+.top-links a { font-weight: 600; }
+
 /* buttons */
 .btn { display: inline-block; padding: 8px 20px; background: #2196f3; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; text-decoration: none; }
 .btn:hover { background: #1976d2; color: #fff; text-decoration: none; }
@@ -40,6 +45,14 @@ th, td { border: 1px solid #eee; padding: 10px 12px; }
 th { background: #f5f5f5; font-weight: 600; }
 tr:hover { background: #fafafa; }
 .checkbox-col { width: 56px; text-align: center; }
+
+/* sticky header for long tables */
+.table-wrap table thead th { position: sticky; top: 0; z-index: 2; }
+.table-wrap table thead th { box-shadow: inset 0 -1px 0 #eaeaea; }
+
+/* better readability on dense tables */
+.table-dense th, .table-dense td { padding: 8px 10px; }
+.table-small { font-size: 12.5px; }
 
 /* pagination + compare actions */
 .compare-form { margin-bottom: 24px; }
@@ -85,4 +98,25 @@ tr:hover { background: #fafafa; }
 .sample a:hover { background: #f3f7ff; }
 .sub { color: #666; font-size: 12px; }
 .left { text-align: left; }
+
+/* prevent CJK vertical-like wrapping */
+.nowrap { white-space: nowrap; word-break: keep-all; overflow: hidden; text-overflow: ellipsis; }
+.w-180 { max-width: 180px; }
+.w-240 { max-width: 240px; }
+.w-320 { max-width: 320px; }
+
+/* allow wrapping without per-character vertical stacking */
+.wraptext { white-space: normal; word-break: normal; overflow-wrap: anywhere; line-height: 1.65; }
+
+/* segment cards */
+.seg-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
+.seg-card { padding: 14px 16px; border: 1px solid #eee; border-radius: 12px; background: #fff; }
+.seg-title { display:flex; align-items:baseline; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.seg-title .name { font-weight: 800; color:#1a1a1a; }
+.seg-title .tag { font-weight: 700; color:#1565c0; background:#e3f2fd; padding: 2px 10px; border-radius: 999px; }
+.seg-kv { display:grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; margin: 10px 0 8px; }
+.seg-kv .k { font-size: 12px; color:#666; }
+.seg-kv .v { font-size: 14px; font-weight: 700; color:#222; }
+.seg-meta { font-size: 12.5px; color:#444; margin-top: 8px; }
+.seg-meta .label { color:#666; font-weight: 700; }
 

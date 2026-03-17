@@ -10,6 +10,7 @@
   - 聚类分布饼图
   - 跨分页/跨筛选的多选客户对比（本地 `localStorage` 记忆）
   - 随机客户跳转
+  - 筛选后显示：该群体核心特征概览卡片（业务命名、流失风险、与整体差异）
 - **客户详情页**：
   - 指标百分位条（红线标记位置）
   - 雷达图、散点图、订单趋势图
@@ -19,6 +20,15 @@
   - 多客户关键指标对比表
   - 多客户雷达图
   - “保留第一位 + 随机选择后两位”随机对比
+- **群体总览页（RFM-BC）**：`/segment-overview`
+  - 群体对比图（雷达图 + 热力图）
+  - 群体概览卡片（无需横向滚动）
+  - 聚类差异合理性验证（倍数差异）
+  - 高价值用户 / 高流失风险用户 / 高互动用户 / 分布统计（论文模块）
+- **算法对比页（论文用）**：`/algo-compare`
+  - K-Means：SSE 手肘图、Silhouette 曲线、CH 指标与耗时
+  - DBSCAN：eps/min_samples 网格搜索 + 噪声比例
+  - 自动生成“论文可直接引用的总结”
 - **数据源切换**：同一套页面可选择 **CSV** 或 **MySQL** 数据源。
 
 ## 项目结构（主要文件）
@@ -32,6 +42,14 @@
 - `clustering_experiments.py`：K-Means 与 DBSCAN 聚类算法对比实验
 - `run_visualizations.py`：独立生成 RFM-BC 雷达图与聚类特征热力图 HTML
 - `customer_features_rfmbc.csv`：网页展示默认使用的数据（若使用 CSV 模式）
+
+## 主要页面入口
+
+- 首页：`/`
+- 群体总览（RFM-BC）：`/segment-overview`
+- 算法对比（K-Means vs DBSCAN）：`/algo-compare`
+- 多客户对比：`/compare`
+- 随机客户：`/user/random`
 
 ## 环境要求
 
@@ -110,6 +128,12 @@ python flask_app.py
 
 ## 常用脚本
 
+- 生成系统默认数据源（RFMB-C 12 特征 + 画像字段 + 聚类标签）：
+
+```bash
+python build_rfmbc_features.py
+```
+
 - 生成聚类对比实验结果：
 
 ```bash
@@ -129,7 +153,6 @@ python run_visualizations.py
 
 ## 常见问题
 
-- **Q：启动报错找不到 `customer_clusters_simple.csv`？**  
 - **Q：启动报错找不到 `customer_features_rfmbc.csv`？**  
   - **A**：先运行 `python build_rfmbc_features.py` 从 `E_commerce.csv` 生成该文件，然后再启动 Flask。
 
