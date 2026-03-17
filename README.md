@@ -27,10 +27,11 @@
 - `templates/`：Flask 标准模板目录（HTML 模板）
 - `static/`：静态资源目录（CSS / JS）
 - `start_all.py`：一键启动脚本（安装依赖 → 可选导入 MySQL → 启动 Flask → 打开浏览器）
-- `import_csv_to_mysql.py`：将 `customer_clusters_simple.csv` 导入 MySQL
+- `build_rfmbc_features.py`：从 `E_commerce.csv` 生成 RFMB-C 12 核心特征与画像字段，输出 `customer_features_rfmbc.csv`
+- `import_csv_to_mysql.py`：将 `customer_features_rfmbc.csv` 导入 MySQL
 - `clustering_experiments.py`：K-Means 与 DBSCAN 聚类算法对比实验
 - `run_visualizations.py`：独立生成 RFM-BC 雷达图与聚类特征热力图 HTML
-- `customer_clusters_simple.csv`：网页展示默认使用的数据（若使用 CSV 模式）
+- `customer_features_rfmbc.csv`：网页展示默认使用的数据（若使用 CSV 模式）
 
 ## 环境要求
 
@@ -47,7 +48,7 @@ pip install -r requirements.txt
 
 ### 方式 1：直接启动（推荐入门）
 
-确保项目根目录存在 `customer_clusters_simple.csv`，然后运行：
+确保项目根目录存在 `customer_features_rfmbc.csv`，然后运行：
 
 ```bash
 python flask_app.py
@@ -70,7 +71,7 @@ python start_all.py
 该脚本会：
 
 - 安装依赖（`requirements.txt`）
-- 若检测到 `customer_clusters_simple.csv`：尝试导入 MySQL（调用 `import_csv_to_mysql.py`）
+- 若检测到 `customer_features_rfmbc.csv`：尝试导入 MySQL（调用 `import_csv_to_mysql.py`）
 - 启动 `flask_app.py`
 - 自动打开浏览器访问首页
 
@@ -129,7 +130,8 @@ python run_visualizations.py
 ## 常见问题
 
 - **Q：启动报错找不到 `customer_clusters_simple.csv`？**  
-  - **A**：确认该文件在项目根目录；或先运行 notebook/聚类脚本生成对应 CSV。
+- **Q：启动报错找不到 `customer_features_rfmbc.csv`？**  
+  - **A**：先运行 `python build_rfmbc_features.py` 从 `E_commerce.csv` 生成该文件，然后再启动 Flask。
 
 - **Q：端口 5000 被占用？**  
   - **A**：修改 `flask_app.py` 底部 `app.run(..., port=5000)` 的端口，例如 `5001`。

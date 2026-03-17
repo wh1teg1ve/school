@@ -15,8 +15,8 @@
 二、数据来源（二选一）
 
 【方式一：CSV 文件】默认
-• 确保 customer_clusters_simple.csv 在项目根目录
-• 若需重新生成：运行 k-means.ipynb（需 customer_features_complete.csv）
+• 确保 customer_features_rfmbc.csv 在项目根目录（系统默认数据源）
+• 若需重新生成：运行 python build_rfmbc_features.py（需 E_commerce.csv）
 
 【方式二：MySQL】
 • 1. 安装并启动 MySQL，创建库：CREATE DATABASE customer_profile;
@@ -57,6 +57,7 @@
 五、其他脚本（可选）
 
 • import_csv_to_mysql.py     — 将 CSV 导入 MySQL
+• build_rfmbc_features.py    — 生成 RFMB-C 12 核心特征数据（customer_features_rfmbc.csv）
 • clustering_experiments.py  — K-Means 与 DBSCAN 对比实验
 • run_visualizations.py      — 生成 RFM-BC 雷达图、聚类热力图 HTML
 • web_app.ipynb              — 可视化 Notebook（雷达图、热力图）
@@ -67,7 +68,8 @@
 六、常见问题
 
 Q: 启动后报错找不到 customer_clusters_simple.csv
-A: 先运行 k-means.ipynb 生成该文件，或确认该文件在项目根目录下
+Q: 启动后报错找不到 customer_features_rfmbc.csv
+A: 先运行 python build_rfmbc_features.py 生成该文件，或确认该文件在项目根目录下
 
 Q: 端口 5000 已被占用
 A: 修改 flask_app.py 最后一行的 port=5000 为其他端口（如 5001）

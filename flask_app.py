@@ -24,7 +24,7 @@ import plotly.graph_objects as go
 
 app = Flask(__name__)
 
-DATA_CSV_PATH = "customer_clusters_simple.csv"
+DATA_CSV_PATH = "customer_features_rfmbc.csv"
 # 是否启用 MySQL 数据源（否则默认用 CSV），由环境变量控制
 USE_MYSQL = os.environ.get("USE_MYSQL", "").lower() in ("1", "true", "yes")
 
@@ -80,7 +80,22 @@ def create_individual_profiles(df: pd.DataFrame) -> pd.DataFrame:
         def _safe_int(v, default: int = 0) -> int:
             if v is None or (isinstance(v, float) and np.isnan(v)):
                 return int(default)
-            return int(v)
+            # 兼容字符串形式的数字（如 "58" / "58.0"）
+            if isinstance(v, str):
+                s = v.strip()
+                if s == "":
+                    return int(default)
+                try:
+                    return int(float(s))
+                except Exception:
+                    return int(default)
+            try:
+                return int(v)
+            except Exception:
+                try:
+                    return int(float(v))
+                except Exception:
+                    return int(default)
 
         total_sales = _safe_float(row.get("Total_Sales", 0.0), 0.0)
         total_orders = _safe_int(row.get("Total_Orders", 0), 0)

@@ -67,16 +67,16 @@ def main() -> None:
     print()
 
     # 2. 可选：检测本地 CSV 并导入 MySQL（如果没有 CSV 就跳过此步）
-    csv_path = root / "customer_clusters_simple.csv"
+    csv_path = root / "customer_features_rfmbc.csv"
     if csv_path.exists():
-        print("[2/4] 检测到 customer_clusters_simple.csv，尝试导入 MySQL ...")
+        print("[2/4] 检测到 customer_features_rfmbc.csv，尝试导入 MySQL ...")
         run_step(
             [sys.executable, "import_csv_to_mysql.py"],
             "导入 CSV 到 MySQL (import_csv_to_mysql.py)",
         )
     else:
         print(
-            "[2/4] 未找到 customer_clusters_simple.csv，跳过导入步骤（Flask 将直接使用 CSV 或当前数据源配置）。"
+            "[2/4] 未找到 customer_features_rfmbc.csv，跳过导入步骤（Flask 将直接使用 CSV 或当前数据源配置）。"
         )
     print()
 

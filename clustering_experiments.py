@@ -21,12 +21,27 @@ from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.metrics import silhouette_score, calinski_harabasz_score
 
 
-DATA_CSV = "customer_clusters_simple.csv"
+DATA_CSV = "customer_features_rfmbc.csv"
 # 开题报告中希望的对比聚类数 K=5；若设为 None，则自动选用轮廓系数最优的 K
 K_FOR_COMPARE = 5
 
 # 与 notebook 中保持一致的“标准特征名”到多个可能列名的映射，便于兼容不同版本的数据
 FEATURE_ALIASES = {
+    # 开题落地：RFMB-C 12 个核心特征（Min-Max 后的 _MM 列）
+    "R_Recency_Days_MM": ["R_Recency_Days_MM"],
+    "R_Avg_Interval_Days_MM": ["R_Avg_Interval_Days_MM"],
+    "F_Orders_30d_MM": ["F_Orders_30d_MM"],
+    "F_Orders_90d_MM": ["F_Orders_90d_MM"],
+    "M_Sales_30d_MM": ["M_Sales_30d_MM"],
+    "M_AOV_30d_MM": ["M_AOV_30d_MM"],
+    "M_Sales_Var_90d_MM": ["M_Sales_Var_90d_MM"],
+    "B_Browse_Count_30d_MM": ["B_Browse_Count_30d_MM"],
+    "B_Avg_Browse_Time_30d_MM": ["B_Avg_Browse_Time_30d_MM"],
+    "B_Depth_30d_MM": ["B_Depth_30d_MM"],
+    "C_Top1_Ratio_MM": ["C_Top1_Ratio_MM"],
+    "C_Top3_Coverage_MM": ["C_Top3_Coverage_MM"],
+
+    # 兼容旧数据集（若仍使用旧的 customer_clusters_simple.csv）
     "Total_Sales": ["Total_Sales"],
     "Total_Orders": ["Total_Orders"],
     "Avg_Order_Value": ["Avg_Order_Value"],

@@ -23,7 +23,7 @@ MYSQL_CONFIG = {
     "charset": "utf8mb4",
 }
 
-CSV_PATH = "customer_clusters_simple.csv"
+CSV_PATH = "customer_features_rfmbc.csv"
 TABLE_NAME = "customer_clusters"
 
 
