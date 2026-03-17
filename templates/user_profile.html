@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+
+{% block title %}客户画像报告 - {{ customer_name or customer_id }}{% endblock %}
+
+{% block content %}
+  <div class="profile-container">
+    <div class="back">
+      <a href="/">&larr; 返回用户列表</a>
+      <a href="/compare?ids={{ customer_id }}" class="btn-compare">对比多个客户</a>
+    </div>
+    <h1>客户画像报告</h1>
+    {% if headline_summary %}
+      <p class="headline">{{ headline_summary }}</p>
+    {% endif %}
+
+    <div class="section">
+      <h2>基本信息</h2>
+      <div class="header-grid">
+        <div class="header-card"><strong>客户 ID</strong>{{ customer_id }}</div>
+        <div class="header-card"><strong>客户姓名</strong>{{ customer_name or '-' }}</div>
+        <div class="header-card"><strong>所属群体</strong>{{ cluster_label or cluster or '-' }}</div>
+        <div class="header-card"><strong>偏好产品</strong>{{ favorite_product or '-' }}</div>
+        <div class="header-card"><strong>综合评分</strong>{{ overall_score }}</div>
+        <div class="header-card"><strong>运营优先级</strong>{{ priority_label }}</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>指标排名</h2>
+      <p class="section-desc">百分位越高表示该指标优于越多用户。条形图表示所处百分位水平。</p>
+      {% for m in metrics %}
+      <div class="metric-row">
+        <span class="label">{{ m.label }}</span>
+        <span class="value">{{ m.value }}</span>
+        <span class="percent-bar">
+          <span class="percent-marker" style="left:{{ m.marker_pos }}%;"></span>
+        </span>
+        {% set p = m.percentile | round(0) | int %}
+        <span class="pct-text">
+          位于前 {{ p }}% · 超过 {{ 100 - p }}% 用户
+        </span>
+      </div>
+      {% endfor %}
+    </div>
+
+    <div class="section">
+      <h2>雷达图：各维度百分位对比</h2>
+      <p class="section-desc">该客户在各指标上相对于全体用户的百分位（0–100）。</p>
+      <div style="max-width: 500px; margin: 0 auto;">
+        {{ radar_chart_html | safe }}
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>散点图：在全体用户中的位置</h2>
+      <p class="section-desc">灰色点为其他用户，<span style="color:#e91e63;font-weight:bold;">红色菱形</span>为当前客户。</p>
+      <div class="chart-row">
+        <div>{{ scatter_sales_orders_html | safe }}</div>
+        <div>{{ scatter_avg_freq_html | safe }}</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>订单趋势</h2>
+      <p class="section-desc">近 12 个月订单数与全体平均对比。</p>
+      {{ orders_trend_html | safe }}
+    </div>
+
+    <div class="section">
+      <h2>客户分析</h2>
+      <p class="section-desc">基于 RFM-BC 聚类与指标百分位的综合分析。</p>
+      <ul class="analysis-list">
+        {% for item in analysis_items %}
+        <li><strong>{{ item.label }}：</strong>{{ item.text }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+
+    <div class="section">
+      <h2>推荐营销方案</h2>
+      <p class="section-desc">根据客户群体特征推荐的营销策略，按优先级排序。</p>
+      <div class="rec-list">
+        {% for rec in marketing_recs %}
+        <div class="rec-card">
+          <span class="rec-priority">P{{ rec.priority }}</span>
+          <div>
+            <strong>{{ rec.title }}</strong>
+            <p>{{ rec.desc }}</p>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>详细指标</h2>
+      <div class="detail-grid">
+        <p><strong>总销售额：</strong>{{ total_sales }}</p>
+        <p><strong>订单数：</strong>{{ total_orders }}</p>
+        <p><strong>用户平均订单价格：</strong>{{ avg_order_value }}</p>
+        <p><strong>客户生命周期：</strong>{{ customer_lifetime }} 天</p>
+        <p><strong>购买频率：</strong>{{ purchase_frequency }}</p>
+        <p><strong>利润率：</strong>{{ profit_margin }}</p>
+        <p><strong>距上次购买：</strong>{{ last_purchase_days }} 天</p>
+        <p><strong>互动分：</strong>{{ engagement_score }}</p>
+      </div>
+    </div>
+  </div>
+{% endblock %}
+

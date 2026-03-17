@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+
+{% block title %}群体总览 - 客户画像{% endblock %}
+
+{% block content %}
+  <div class="back">
+    <a href="/">&larr; 返回仪表盘</a>
+    <span class="sub">群体总览：从“群体维度”快速理解用户分层与运营重点。</span>
+  </div>
+  <h1>群体 RFM-BC 总览</h1>
+
+  <div class="cards">
+    <div class="card"><strong>总用户数</strong><div class="v">{{ total_users }}</div></div>
+    <div class="card"><strong>群体数量</strong><div class="v">{{ segment_count }}</div></div>
+    <div class="card"><strong>高价值客户数</strong><div class="v">{{ high_value_count }}</div></div>
+    <div class="card"><strong>潜在流失客户数</strong><div class="v">{{ churn_count }}</div></div>
+  </div>
+
+  <div class="section">
+    <h2>群体对比图</h2>
+    <p class="section-desc">左侧为各群体“指标百分位均值”雷达图，右侧为各群体“关键特征均值（0–100 标准化）”热力图。</p>
+    <div class="grid2">
+      <div>{{ radar_html | safe }}</div>
+      <div>{{ heatmap_html | safe }}</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>群体概览表</h2>
+    <p class="section-desc">点击“群体名称”可跳转回首页并自动筛选该群体；点击样本客户可进入客户详情页。</p>
+    <table>
+      <thead>
+        <tr>
+          <th class="left">群体</th>
+          <th>人数</th>
+          <th>占比</th>
+          <th>活跃度均值</th>
+          <th>总消费均值</th>
+          <th>订单数均值</th>
+          <th>用户平均订单价格均值</th>
+          <th>距上次购买(天)中位数</th>
+          <th class="left">优势维度</th>
+          <th class="left">样本客户</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in segments %}
+        <tr>
+          <td class="left"><a class="pill" href="{{ s.href }}">{{ s.name }}</a></td>
+          <td>{{ s.count }}</td>
+          <td>{{ s.pct }}%</td>
+          <td>{{ s.activity_avg }}</td>
+          <td>{{ s.sales_avg }}</td>
+          <td>{{ s.orders_avg }}</td>
+          <td>{{ s.aov_avg }}</td>
+          <td>{{ s.last_days_median }}</td>
+          <td class="left">{{ s.strengths }}</td>
+          <td class="left">
+            <div class="sample">
+              {% for u in s.samples %}
+                <a href="/user/{{ u.id }}">{{ u.id }}<span class="sub">（{{ u.name }}）</span></a>
+              {% endfor %}
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endblock %}
+

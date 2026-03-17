@@ -39,6 +39,10 @@
 3. 启动服务：
    python flask_app.py
 
+   说明：
+   • 本项目已改为 Flask 标准模板结构，请确保项目根目录包含 templates/ 与 static/ 目录
+     （例如 templates/index.html、static/style.css），否则会报 TemplateNotFound。
+
 4. 在浏览器中访问：
    http://127.0.0.1:5000
 

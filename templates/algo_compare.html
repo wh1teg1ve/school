@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+
+{% block title %}算法对比：K-Means vs DBSCAN{% endblock %}
+
+{% block content %}
+  <div class="back">
+    <a href="/">&larr; 返回仪表盘</a>
+    <span class="sub">用于论文/答辩：对比 K-Means 与 DBSCAN 的聚类质量与效率指标。</span>
+  </div>
+
+  <h1>K-Means vs DBSCAN 算法对比</h1>
+
+  {% if error %}
+    <div class="section">
+      <h2>错误</h2>
+      <p class="section-desc">{{ error }}</p>
+    </div>
+  {% else %}
+    <div class="section">
+      <h2>数据与特征</h2>
+      <p class="section-desc">
+        数据源：<strong>{{ data_source }}</strong>；样本数：<strong>{{ n_samples }}</strong>；使用特征（{{ features | length }} 个）：{{ features | join('、') }}
+      </p>
+    </div>
+
+    <div class="section">
+      <h2>1）K-Means 调优结果（手肘法/轮廓系数/CH）</h2>
+      <p class="section-desc">遍历 K，记录 SSE、Silhouette、Calinski-Harabasz 与耗时；推荐 K 为轮廓系数最高者。</p>
+      <div class="grid2" style="margin: 10px 0 14px;">
+        <div>
+          <h2 style="font-size: 1.02em; margin: 0 0 6px;">SSE 手肘图（K vs SSE）</h2>
+          <p class="sub" style="margin: 0 0 8px;">SSE 随 K 增大下降，但下降“变缓”的拐点常作为合理 K 的参考。</p>
+          {{ elbow_html | safe }}
+        </div>
+        <div>
+          <h2 style="font-size: 1.02em; margin: 0 0 6px;">轮廓系数曲线（K vs Silhouette）</h2>
+          <p class="sub" style="margin: 0 0 8px;">轮廓系数越高表示类内更紧密、类间更分离；本页推荐 K 取其最大值。</p>
+          {{ sil_html | safe }}
+        </div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>K</th>
+            <th>SSE</th>
+            <th>Silhouette</th>
+            <th>CH</th>
+            <th>耗时(s)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in kmeans_table %}
+          <tr>
+            <td>{{ row.k }}</td>
+            <td>{{ row.sse }}</td>
+            <td>{{ row.sil }}</td>
+            <td>{{ row.ch }}</td>
+            <td>{{ row.time }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <p class="section-desc">推荐：<strong>K={{ kmeans_best_k }}</strong>（Silhouette={{ kmeans_best_sil }})</p>
+    </div>
+
+    <div class="section">
+      <h2>2）DBSCAN 网格搜索结果（eps / min_samples）</h2>
+      <p class="section-desc">优先筛选：簇数 ≥ 2、噪声比例 &lt; 10%、并尽量提升轮廓系数。</p>
+      <table>
+        <thead>
+          <tr>
+            <th>eps</th>
+            <th>min_samples</th>
+            <th>簇数</th>
+            <th>噪声比例(%)</th>
+            <th>Silhouette</th>
+            <th>CH</th>
+            <th>耗时(s)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in dbscan_table %}
+          <tr>
+            <td>{{ row.eps }}</td>
+            <td>{{ row.min_samples }}</td>
+            <td>{{ row.n_clusters }}</td>
+            <td>{{ row.noise_ratio }}</td>
+            <td>{{ row.sil }}</td>
+            <td>{{ row.ch }}</td>
+            <td>{{ row.time }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <p class="section-desc">
+        推荐：<strong>eps={{ db_best.eps }}, min_samples={{ db_best.min_samples }}</strong>
+        （簇数={{ db_best.n_clusters }}，噪声={{ db_best.noise_ratio }}%，Silhouette={{ db_best.sil }}）
+      </p>
+    </div>
+
+    <div class="section">
+      <h2>3）最终对比（同一数据 & 推荐参数）</h2>
+      <table>
+        <thead>
+          <tr>
+            <th></th>
+            <th>簇数</th>
+            <th>噪声比例(%)</th>
+            <th>Silhouette</th>
+            <th>CH</th>
+            <th>耗时(s)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="left"><strong>K-Means</strong></td>
+            <td>{{ compare.kmeans.n_clusters }}</td>
+            <td>-</td>
+            <td>{{ compare.kmeans.sil }}</td>
+            <td>{{ compare.kmeans.ch }}</td>
+            <td>{{ compare.kmeans.time }}</td>
+          </tr>
+          <tr>
+            <td class="left"><strong>DBSCAN</strong></td>
+            <td>{{ compare.dbscan.n_clusters }}</td>
+            <td>{{ compare.dbscan.noise_ratio }}</td>
+            <td>{{ compare.dbscan.sil }}</td>
+            <td>{{ compare.dbscan.ch }}</td>
+            <td>{{ compare.dbscan.time }}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p class="section-desc">
+        结论参考：K-Means 簇数固定、标签稳定，适合定义“5 类用户群体”；DBSCAN 可自动发现簇结构，但可能产生噪声点，需要额外处理。
+      </p>
+    </div>
+
+    <div class="section">
+      <h2>论文可直接引用的总结</h2>
+      <p class="section-desc">可直接复制到论文“实验设计/结果分析”章节（数值来自本页实时计算结果）。</p>
+      <div style="padding: 14px 16px; border: 1px solid #eee; border-radius: 10px; background: #fafafa; line-height: 1.75;">
+        {{ paper_summary }}
+      </div>
+    </div>
+  {% endif %}
+{% endblock %}
+

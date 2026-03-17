@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+
+{% block title %}客户画像仪表盘（Flask）{% endblock %}
+
+{% block content %}
+  <h1>客户画像仪表盘</h1>
+  <p style="margin: -6px 0 18px; color:#666; font-size: 0.92em;">
+    <a href="/segment-overview">查看群体总览（RFM-BC）</a>
+    <span class="sub">｜</span>
+    <a href="/algo-compare">K-Means vs DBSCAN 算法对比</a>
+  </p>
+
+  <div class="summary">
+    <p>
+      <strong>总用户数：</strong>{{ total_users }}；
+      <strong>总消费金额：</strong>¥{{ "%.0f"|format(overall_sales) }}；
+      <strong>总订单数：</strong>{{ "%.0f"|format(overall_orders) }}；
+      <strong>整体用户平均订单价格：</strong>¥{{ "%.2f"|format(overall_aov) }}
+    </p>
+    <p>
+      <strong>高价值客户数：</strong>{{ high_value_count }}；
+      <strong>潜在流失客户数：</strong>{{ churn_count }}
+    </p>
+    <p><strong>聚类分布：</strong> 点击筛选
+    {% for name, count, href in cluster_badges %}
+      <a href="{{ href }}" class="badge {{ 'badge-active' if cluster == name else '' }}">{{ name }}：{{ count }}</a>
+    {% endfor %}
+    {% if cluster %}<a href="/" class="badge badge-clear">清除筛选</a>{% endif %}
+    </p>
+  </div>
+
+  <div class="section">
+    <h2 style="font-size:1.05em;margin:0 0 8px;">各客户群体用户占比</h2>
+    <p class="section-desc">帮助快速对比不同客户群体的价值水平。</p>
+    {{ cluster_bar_html | safe }}
+  </div>
+
+  <form class="search-form" method="get" action="/">
+    <label>客户 ID：</label>
+    <input type="text" name="customer_id" value="{{ customer_id or '' }}" placeholder="筛选客户ID" />
+    <label>聚类：</label>
+    <input type="text" name="cluster" value="{{ cluster or '' }}" placeholder="按群体筛选" />
+    <button class="btn" type="submit">筛选</button>
+    <a href="/user/random" class="btn">随机客户</a>
+  </form>
+
+  <form class="compare-form" method="get" action="/compare">
+    <div class="compare-actions-top">
+      <span>在下方勾选多个客户后，可一键进入对比页面（跨筛选和分页将自动记住）。当前第 {{ page }} / {{ total_pages }} 页，每页 {{ per_page }} 条，合计 {{ total_users }} 个客户。<span id="selected-counter"></span></span>
+      <button type="submit" class="btn btn-green">对比选中客户</button>
+    </div>
+    <div class="table-wrap">
+      {{ table_html | safe }}
+    </div>
+    <div class="compare-actions-bottom">
+      <div></div>
+      <div>
+        {% if page > 1 %}
+          <a class="btn-page" href="/?page={{ page - 1 }}&per_page={{ per_page }}&customer_id={{ (customer_id or '') | urlencode }}&cluster={{ (cluster or '') | urlencode }}&sort_by={{ sort_by }}&sort_dir={{ sort_dir }}">上一页</a>
+        {% endif %}
+        {% if page < total_pages %}
+          <a class="btn-page" href="/?page={{ page + 1 }}&per_page={{ per_page }}&customer_id={{ (customer_id or '') | urlencode }}&cluster={{ (cluster or '') | urlencode }}&sort_by={{ sort_by }}&sort_dir={{ sort_dir }}">下一页</a>
+        {% endif %}
+      </div>
+    </div>
+  </form>
+{% endblock %}
+
+{% block body_extra %}
+  <script src="{{ url_for('static', filename='index.js') }}"></script>
+{% endblock %}
+

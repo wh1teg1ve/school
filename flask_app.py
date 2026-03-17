@@ -13,9 +13,10 @@
 from __future__ import annotations
 
 import os
+import time
 from urllib.parse import quote
 
-from flask import Flask, jsonify, redirect, render_template_string, request
+from flask import Flask, jsonify, redirect, render_template, request
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
@@ -198,453 +199,349 @@ def get_profiles_scored() -> pd.DataFrame:
     return profiles_scored
 
 
+# === 简单缓存：避免每个请求都全量重算 ===
+# 说明：
+# - 首页/详情页/对比页都会调用 get_profiles_scored()，如果每次请求都重新 rank/percentile，会明显变慢。
+# - 这里做一个轻量的内存缓存（进程内），对开发/演示很有用。
+_PROFILES_CACHE: pd.DataFrame | None = None
+_PROFILES_CACHE_KEY: tuple | None = None
+_PROFILES_CACHE_AT: float = 0.0
+
+
+def _profiles_cache_key() -> tuple:
+    """生成缓存 key：CSV 模式跟随文件 mtime；MySQL 模式使用连接配置 + 固定 key。"""
+    if USE_MYSQL:
+        # MySQL 的数据变化无法可靠感知；此处只把配置纳入 key，并依赖 TTL 自动刷新
+        return (
+            "mysql",
+            MYSQL_CONFIG.get("host"),
+            MYSQL_CONFIG.get("port"),
+            MYSQL_CONFIG.get("user"),
+            MYSQL_CONFIG.get("database"),
+            MYSQL_TABLE,
+        )
+    try:
+        st = os.stat(DATA_CSV_PATH)
+        return ("csv", DATA_CSV_PATH, int(st.st_mtime), int(st.st_size))
+    except OSError:
+        # 文件不存在/不可访问时也要有 key，避免异常导致缓存逻辑崩
+        return ("csv", DATA_CSV_PATH, 0, 0)
+
+
+def get_profiles_scored_cached(ttl_sec: float = 5.0) -> pd.DataFrame:
+    """带 TTL 的缓存版本：尽量复用上一份已计算的画像表。"""
+    global _PROFILES_CACHE, _PROFILES_CACHE_KEY, _PROFILES_CACHE_AT
+    key = _profiles_cache_key()
+    now = time.time()
+    if (
+        _PROFILES_CACHE is not None
+        and _PROFILES_CACHE_KEY == key
+        and (now - _PROFILES_CACHE_AT) <= float(ttl_sec)
+    ):
+        return _PROFILES_CACHE
+    df = get_profiles_scored()
+    _PROFILES_CACHE = df
+    _PROFILES_CACHE_KEY = key
+    _PROFILES_CACHE_AT = now
+    return df
+
+
 # === Flask 路由 ===
 
-INDEX_TEMPLATE = """
-<!doctype html>
-<html lang="zh-CN">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>客户画像仪表盘（Flask）</title>
-    <style>
-      * { box-sizing: border-box; }
-      body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; margin: 0; padding: 24px; background: #f8f9fa; }
-      .container { max-width: 1200px; margin: 0 auto; background: #fff; padding: 32px; border-radius: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
-      h1 { margin: 0 0 20px; font-size: 1.5em; color: #1a1a1a; }
-      .summary { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin-bottom: 20px; padding: 16px; background: #f8f9fa; border-radius: 8px; }
-      .summary p { margin: 0; }
-      .badge { display: inline-block; padding: 4px 10px; border-radius: 6px; background: #e3f2fd; color: #1565c0; margin-right: 6px; margin-bottom: 4px; font-size: 0.9em; text-decoration: none; }
-      .badge:hover { background: #bbdefb; color: #0d47a1; }
-      .badge-active { background: #1976d2; color: #fff; }
-      .badge-active:hover { background: #1565c0; color: #fff; }
-      .badge-clear { background: #ffebee; color: #c62828; }
-      .badge-clear:hover { background: #ffcdd2; color: #b71c1c; }
-      .search-form { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 16px; padding: 16px; background: #f8f9fa; border-radius: 8px; }
-      .search-form label { font-weight: 500; }
-      .search-form input { padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; }
-      .search-form select { padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; background: #fff; }
-      .search-form button { padding: 8px 20px; background: #2196f3; color: #fff; border: none; border-radius: 6px; cursor: pointer; }
-      .search-form button:hover { background: #1976d2; }
-      .btn-random { display: inline-block; padding: 8px 20px; background: #2196f3; color: #fff; border-radius: 6px; font-size: 14px; }
-      .btn-random:hover { background: #1976d2; color: #fff; text-decoration: none; }
-      .compare-form { margin-bottom: 24px; }
-      .compare-actions-top, .compare-actions-bottom { display: flex; justify-content: space-between; align-items: center; margin: 4px 0; font-size: 0.9em; color: #666; }
-      .btn-compare-selected { padding: 6px 14px; background: #4caf50; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; }
-      .btn-compare-selected:hover { background: #43a047; }
-      .checkbox-col { width: 56px; text-align: center; }
-      .btn-page { display: inline-block; padding: 6px 14px; background: #2196f3; color: #fff; border-radius: 6px; font-size: 13px; text-decoration: none; margin-left: 6px; }
-      .btn-page:hover { background: #1976d2; color: #fff; text-decoration: none; }
-      .table-wrap { overflow-x: auto; border-radius: 8px; border: 1px solid #eee; }
-      table { border-collapse: collapse; width: 100%; font-size: 13px; }
-      th, td { border: 1px solid #eee; padding: 10px 12px; }
-      th { background: #f5f5f5; font-weight: 600; }
-      tr:hover { background: #fafafa; }
-      a { color: #1976d2; text-decoration: none; }
-      a:hover { text-decoration: underline; }
-    </style>
-  </head>
-  <body>
-    <div class="container">
-      <h1>客户画像仪表盘</h1>
+def _prepare_X_for_clustering(df_raw: pd.DataFrame) -> tuple[np.ndarray, list[str]]:
+    """为聚类实验准备特征矩阵：选择可用列、填充缺失值并做 Min-Max 归一化到 [0,1]。"""
+    from sklearn.preprocessing import MinMaxScaler
 
-      <div class="summary">
-        <p>
-          <strong>总用户数：</strong>{{ total_users }}；
-          <strong>总消费金额：</strong>¥{{ "%.0f"|format(overall_sales) }}；
-          <strong>总订单数：</strong>{{ "%.0f"|format(overall_orders) }}；
-          <strong>整体用户平均订单价格：</strong>¥{{ "%.2f"|format(overall_aov) }}
-        </p>
-        <p>
-          <strong>高价值客户数：</strong>{{ high_value_count }}；
-          <strong>潜在流失客户数：</strong>{{ churn_count }}
-        </p>
-        <p><strong>聚类分布：</strong> 点击筛选
-        {% for name, count, href in cluster_badges %}
-          <a href="{{ href }}" class="badge {{ 'badge-active' if cluster == name else '' }}">{{ name }}：{{ count }}</a>
-        {% endfor %}
-        {% if cluster %}<a href="/" class="badge badge-clear">清除筛选</a>{% endif %}
-        </p>
-      </div>
+    feature_aliases = {
+        "Total_Sales": ["Total_Sales"],
+        "Total_Orders": ["Total_Orders"],
+        "Avg_Order_Value": ["Avg_Order_Value"],
+        "Customer_Lifetime": ["Customer_Lifetime_Days", "Customer_Lifetime"],
+        "Purchase_Frequency": ["Purchase_Frequency"],
+        "Avg_Browsing_Time": ["Avg_Browsing_Time"],
+        "Profit_Margin": ["Profit_Margin"],
+        "Days_Since_Last_Purchase": ["Days_Since_Last_Purchase", "Last_Purchase_Days_Ago"],
+        "Engagement_Score": ["Total_Engagement_Score", "Engagement_Score"],
+        "Unique_Products": ["Unique_Products_Purchased", "Unique_Products_Bought"],
+    }
+    cols = list(df_raw.columns)
+    available: list[str] = []
+    for _canon, aliases in feature_aliases.items():
+        for a in aliases:
+            if a in cols:
+                available.append(a)
+                break
 
-      <div class="section" style="margin-bottom: 20px; padding: 16px; background:#fff; border-radius: 10px; box-shadow:0 1px 4px rgba(0,0,0,.04);">
-        <h2 style="font-size:1.05em;margin:0 0 8px;">各客户群体用户占比</h2>
-        <p style="color:#666;font-size:0.88em;margin:0 0 10px;">帮助快速对比不同客户群体的价值水平。</p>
-        {{ cluster_bar_html | safe }}
-      </div>
+    if not available:
+        raise RuntimeError("未找到可用于聚类的特征列（请检查 CSV 列名）")
 
-      <form class="search-form" method="get" action="/">
-        <label>客户 ID：</label>
-        <input type="text" name="customer_id" value="{{ customer_id or '' }}" placeholder="筛选客户ID" />
-        <label>聚类：</label>
-        <input type="text" name="cluster" value="{{ cluster or '' }}" placeholder="按群体筛选" />
-        <button type="submit">筛选</button>
-        <a href="/user/random" class="btn-random">随机客户</a>
-      </form>
+    X = df_raw[available].copy()
+    X = X.apply(pd.to_numeric, errors="coerce")
+    X = X.fillna(X.median(numeric_only=True))
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    X_scaled = scaler.fit_transform(X.values)
+    return X_scaled, available
 
-      <form class="compare-form" method="get" action="/compare">
-        <div class="compare-actions-top">
-          <span>在下方勾选多个客户后，可一键进入对比页面（跨筛选和分页将自动记住）。当前第 {{ page }} / {{ total_pages }} 页，每页 {{ per_page }} 条，合计 {{ total_users }} 个客户。<span id="selected-counter"></span></span>
-          <button type="submit" class="btn-compare-selected">对比选中客户</button>
-        </div>
-        <div class="table-wrap">
-          {{ table_html | safe }}
-        </div>
-        <div class="compare-actions-bottom">
-          <div></div>
-          <div>
-            {% if page > 1 %}
-              <a class="btn-page" href="/?page={{ page - 1 }}&per_page={{ per_page }}&customer_id={{ (customer_id or '') | urlencode }}&cluster={{ (cluster or '') | urlencode }}&sort_by={{ sort_by }}&sort_dir={{ sort_dir }}">上一页</a>
-            {% endif %}
-            {% if page < total_pages %}
-              <a class="btn-page" href="/?page={{ page + 1 }}&per_page={{ per_page }}&customer_id={{ (customer_id or '') | urlencode }}&cluster={{ (cluster or '') | urlencode }}&sort_by={{ sort_by }}&sort_dir={{ sort_dir }}">下一页</a>
-            {% endif %}
-          </div>
-        </div>
-      </form>
-      <script>
-        (function() {
-          const STORAGE_KEY = 'selectedCustomerIds';
 
-          function loadSelected() {
-            try {
-              const raw = localStorage.getItem(STORAGE_KEY);
-              if (!raw) return [];
-              const arr = JSON.parse(raw);
-              return Array.isArray(arr) ? arr : [];
-            } catch (e) {
-              return [];
-            }
-          }
+@app.route("/algo-compare")
+def algo_compare():
+    """论文/答辩用：K-Means 与 DBSCAN 对比页（轮廓系数、CH、耗时、簇数、噪声比例）。"""
+    error = None
+    try:
+        # 聚类实验更适合用原始 CSV（避免 MySQL 全 TEXT 带来的类型问题）
+        df_raw = pd.read_csv(DATA_CSV_PATH)
+        X, features = _prepare_X_for_clustering(df_raw)
 
-          function saveSelected(ids) {
-            try {
-              localStorage.setItem(STORAGE_KEY, JSON.stringify(ids));
-            } catch (e) {}
-          }
+        import time as _time
+        from sklearn.cluster import KMeans, DBSCAN
+        from sklearn.metrics import silhouette_score, calinski_harabasz_score
 
-          function updateCounter(ids) {
-            const el = document.getElementById('selected-counter');
-            if (!el) return;
-            if (!ids.length) {
-              el.textContent = '（已选 0 位客户）';
-            } else {
-              el.textContent = '（已选 ' + ids.length + ' 位客户，将在对比页展示）';
-            }
-          }
+        # 1) K-Means：遍历 K（用于手肘法 + 轮廓系数曲线）
+        k_range = [3, 4, 5, 6]
+        kmeans_rows = []
+        best_k = None
+        best_sil = float("-inf")
+        k_list: list[int] = []
+        sse_list: list[float] = []
+        sil_list: list[float] = []
+        for k in k_range:
+            t0 = _time.perf_counter()
+            km = KMeans(n_clusters=k, random_state=42, n_init=10)
+            labels = km.fit_predict(X)
+            elapsed = _time.perf_counter() - t0
 
-          document.addEventListener('DOMContentLoaded', function() {
-            const checkboxes = Array.from(document.querySelectorAll('input[name="ids"][type="checkbox"]'));
-            const form = document.querySelector('.compare-form');
-            let selected = loadSelected();
+            sse = float(km.inertia_)
+            n_clusters = len(np.unique(labels[labels >= 0]))
+            if 1 < n_clusters < len(X):
+                sil = float(silhouette_score(X, labels))
+                ch = float(calinski_harabasz_score(X, labels))
+            else:
+                sil = float("nan")
+                ch = float("nan")
 
-            // 初始化勾选状态
-            checkboxes.forEach(cb => {
-              if (selected.includes(cb.value)) {
-                cb.checked = true;
-              }
-            });
-            updateCounter(selected);
+            k_list.append(int(k))
+            sse_list.append(float(sse))
+            sil_list.append(float(sil) if not np.isnan(sil) else float("nan"))
 
-            // 勾选/取消时更新本地存储
-            checkboxes.forEach(cb => {
-              cb.addEventListener('change', function() {
-                const id = this.value;
-                if (this.checked) {
-                  if (!selected.includes(id)) {
-                    selected.push(id);
-                  }
-                } else {
-                  selected = selected.filter(x => x !== id);
+            if not np.isnan(sil) and sil > best_sil:
+                best_sil = sil
+                best_k = k
+
+            kmeans_rows.append(
+                {
+                    "k": k,
+                    "sse": f"{sse:,.0f}",
+                    "sil": f"{sil:.4f}" if not np.isnan(sil) else "N/A",
+                    "ch": f"{ch:.2f}" if not np.isnan(ch) else "N/A",
+                    "time": f"{elapsed:.3f}",
                 }
-                saveSelected(selected);
-                updateCounter(selected);
-              });
-            });
+            )
+        if best_k is None:
+            best_k = 5
+            best_sil = float("nan")
 
-            // 提交到 /compare 时，把所有已选 ID 作为隐藏字段带上（包括不在当前页的）
-            if (form) {
-              form.addEventListener('submit', function() {
-                Array.from(form.querySelectorAll('input[type="hidden"][name="ids"]')).forEach(el => el.remove());
-                selected.forEach(id => {
-                  const hidden = document.createElement('input');
-                  hidden.type = 'hidden';
-                  hidden.name = 'ids';
-                  hidden.value = id;
-                  form.appendChild(hidden);
-                });
-              });
-            }
-          });
-        })();
-      </script>
-    </div>
-  </body>
-  </html>
-"""
+        # K 值选择可视化：SSE 手肘图 + Silhouette 曲线
+        elbow_html = "<p class='sub'>暂无数据</p>"
+        sil_html = "<p class='sub'>暂无数据</p>"
+        if k_list and sse_list:
+            fig_elbow = go.Figure()
+            fig_elbow.add_trace(
+                go.Scatter(
+                    x=k_list,
+                    y=sse_list,
+                    mode="lines+markers",
+                    line=dict(color="#1976d2", width=2),
+                    marker=dict(size=7, line=dict(width=1, color="#ffffff")),
+                    name="SSE",
+                )
+            )
+            fig_elbow.update_layout(
+                height=300,
+                margin=dict(l=40, r=20, t=30, b=40),
+                xaxis=dict(title="K（簇数）", dtick=1),
+                yaxis=dict(title="SSE（簇内误差平方和）"),
+                showlegend=False,
+            )
+            elbow_html = fig_elbow.to_html(include_plotlyjs="cdn", full_html=False)
 
+        if k_list and sil_list and any((not np.isnan(v)) for v in sil_list):
+            fig_sil = go.Figure()
+            fig_sil.add_trace(
+                go.Scatter(
+                    x=k_list,
+                    y=[None if np.isnan(v) else float(v) for v in sil_list],
+                    mode="lines+markers",
+                    line=dict(color="#2e7d32", width=2),
+                    marker=dict(size=7, line=dict(width=1, color="#ffffff")),
+                    name="Silhouette",
+                )
+            )
+            # 标注推荐 K
+            if best_k is not None and not np.isnan(best_sil):
+                fig_sil.add_trace(
+                    go.Scatter(
+                        x=[int(best_k)],
+                        y=[float(best_sil)],
+                        mode="markers+text",
+                        text=[f"推荐 K={int(best_k)}"],
+                        textposition="top center",
+                        marker=dict(size=10, color="#e91e63", line=dict(width=1, color="#ffffff")),
+                        showlegend=False,
+                    )
+                )
+            fig_sil.update_layout(
+                height=300,
+                margin=dict(l=40, r=20, t=30, b=40),
+                xaxis=dict(title="K（簇数）", dtick=1),
+                yaxis=dict(title="Silhouette（轮廓系数）"),
+                showlegend=False,
+            )
+            sil_html = fig_sil.to_html(include_plotlyjs=False, full_html=False)
 
-# 客户画像报告页模板（含百分位可视化）
-USER_PROFILE_TEMPLATE = """
-<!doctype html>
-<html lang="zh-CN">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>客户画像报告 - {{ customer_name or customer_id }}</title>
-    <style>
-      * { box-sizing: border-box; }
-      body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; margin: 0; padding: 24px; background: #f8f9fa; }
-      .container { max-width: 1100px; margin: 0 auto; }
-      .back { margin-bottom: 16px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-      .back a { color: #1976d2; text-decoration: none; font-size: 0.95em; }
-      .back a:hover { text-decoration: underline; }
-      .btn-compare { display: inline-block; padding: 4px 10px; border-radius: 6px; background: #4caf50; color: #fff; font-size: 0.9em; }
-      .btn-compare:hover { background: #388e3c; color: #fff; text-decoration: none; }
-      h1 { margin: 0 0 20px; font-size: 1.5em; color: #1a1a1a; }
-      .section { margin-bottom: 24px; padding: 20px; background: #fff; border-radius: 10px; box-shadow: 0 1px 4px rgba(0,0,0,.06); }
-      .section h2 { font-size: 1.1em; margin: 0 0 8px; color: #333; }
-      .section-desc { color: #666; font-size: 0.9em; margin-bottom: 14px; }
-      .headline { font-size: 0.95em; color: #555; margin: -8px 0 16px; }
-      .header-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
-      .header-card { padding: 12px 16px; background: #f8f9fa; border-radius: 8px; }
-      .header-card strong { display: block; font-size: 0.8em; color: #666; margin-bottom: 4px; }
-      .metric-row { display: grid; grid-template-columns: 140px 120px 180px auto; align-items: center; column-gap: 12px; margin: 10px 0; }
-      .metric-row .label { color: #555; }
-      .metric-row .value { font-weight: 600; }
-      .metric-row .percent-bar { position: relative; width: 100%; height: 14px; background: rgba(33,150,243,0.18); border-radius: 7px; overflow: hidden; }
-      .metric-row .percent-marker { position: absolute; top: 0; bottom: 0; width: 2px; background: #e91e63; transform: translateX(-1px); }
-      .metric-row .percent-label { font-size: 0.8em; color: #555; font-weight: 600; margin-left: 8px; }
-      .metric-row .pct-text { font-size: 0.9em; color: #666; text-align: right; }
-      .chart-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 20px; }
-      .chart-row > div { min-width: 0; }
-      .detail-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px 24px; }
-      .detail-grid p { margin: 8px 0; padding: 0; font-size: 0.95em; }
-      .detail-grid strong { color: #555; font-weight: 500; }
-      .analysis-list { margin: 0; padding-left: 20px; line-height: 1.7; color: #333; }
-      .analysis-list li { margin: 8px 0; }
-      .rec-list { display: flex; flex-direction: column; gap: 12px; }
-      .rec-card { display: flex; gap: 12px; padding: 14px 16px; background: #f8f9fa; border-radius: 8px; border-left: 4px solid #2196f3; }
-      .rec-priority { flex-shrink: 0; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; background: #2196f3; color: #fff; border-radius: 6px; font-size: 0.85em; font-weight: 600; }
-      .rec-card div p { margin: 6px 0 0; font-size: 0.92em; color: #555; line-height: 1.5; }
-    </style>
-  </head>
-  <body>
-    <div class="container">
-      <div class="back">
-        <a href="/">&larr; 返回用户列表</a>
-        <a href="/compare?ids={{ customer_id }}" class="btn-compare">对比多个客户</a>
-      </div>
-      <h1>客户画像报告</h1>
-      {% if headline_summary %}
-      <p class="headline">{{ headline_summary }}</p>
-      {% endif %}
+        # 2) DBSCAN：小网格搜索
+        eps_range = [0.3, 0.4, 0.5, 0.6, 0.7]
+        min_samples_range = [3, 5, 7]
+        db_rows = []
+        best = None
 
-      <div class="section">
-        <h2>基本信息</h2>
-        <div class="header-grid">
-          <div class="header-card"><strong>客户 ID</strong>{{ customer_id }}</div>
-          <div class="header-card"><strong>客户姓名</strong>{{ customer_name or '-' }}</div>
-          <div class="header-card"><strong>所属群体</strong>{{ cluster_label or cluster or '-' }}</div>
-          <div class="header-card"><strong>偏好产品</strong>{{ favorite_product or '-' }}</div>
-          <div class="header-card"><strong>综合评分</strong>{{ overall_score }}</div>
-          <div class="header-card"><strong>运营优先级</strong>{{ priority_label }}</div>
-        </div>
-      </div>
+        def _score_db(rec: dict) -> tuple:
+            # 排序规则：满足约束优先，其次 silhouette 越高越好
+            ok = (rec["n_clusters"] >= 2) and (rec["noise_ratio_pct"] < 10) and (not np.isnan(rec["silhouette"]))
+            sil = rec["silhouette"] if not np.isnan(rec["silhouette"]) else -999.0
+            return (1 if ok else 0, sil)
 
-      <div class="section">
-        <h2>指标排名</h2>
-        <p class="section-desc">百分位越高表示该指标优于越多用户。条形图表示所处百分位水平。</p>
-        {% for m in metrics %}
-        <div class="metric-row">
-          <span class="label">{{ m.label }}</span>
-          <span class="value">{{ m.value }}</span>
-          <span class="percent-bar">
-            <span class="percent-marker" style="left:{{ m.marker_pos }}%;"></span>
-          </span>
-          {% set p = m.percentile | round(0) | int %}
-          <span class="pct-text">
-            位于前 {{ p }}% · 超过 {{ 100 - p }}% 用户
-          </span>
-        </div>
-        {% endfor %}
-      </div>
+        for eps in eps_range:
+            for ms in min_samples_range:
+                t0 = _time.perf_counter()
+                db = DBSCAN(eps=eps, min_samples=ms)
+                labels = db.fit_predict(X)
+                elapsed = _time.perf_counter() - t0
 
-      <div class="section">
-        <h2>雷达图：各维度百分位对比</h2>
-        <p class="section-desc">该客户在各指标上相对于全体用户的百分位（0–100）。</p>
-        <div style="max-width: 500px; margin: 0 auto;">
-          {{ radar_chart_html | safe }}
-        </div>
-      </div>
+                n_noise = int((labels == -1).sum())
+                noise_ratio = float(n_noise) / float(len(labels)) * 100.0
+                n_clusters = int(len(np.unique(labels)) - (1 if -1 in labels else 0))
 
-      <div class="section">
-        <h2>散点图：在全体用户中的位置</h2>
-        <p class="section-desc">灰色点为其他用户，<span style="color:#e91e63;font-weight:bold;">红色菱形</span>为当前客户。</p>
-        <div class="chart-row">
-          <div>{{ scatter_sales_orders_html | safe }}</div>
-          <div>{{ scatter_avg_freq_html | safe }}</div>
-        </div>
-      </div>
+                if n_clusters > 1:
+                    mask = labels >= 0
+                    if int(mask.sum()) > n_clusters:
+                        sil = float(silhouette_score(X[mask], labels[mask]))
+                        ch = float(calinski_harabasz_score(X[mask], labels[mask]))
+                    else:
+                        sil = float("nan")
+                        ch = float("nan")
+                else:
+                    sil = float("nan")
+                    ch = float("nan")
 
-      <div class="section">
-        <h2>订单趋势</h2>
-        <p class="section-desc">近 12 个月订单数与全体平均对比。</p>
-        {{ orders_trend_html | safe }}
-      </div>
+                rec = {
+                    "eps": eps,
+                    "min_samples": ms,
+                    "n_clusters": n_clusters,
+                    "noise_ratio_pct": noise_ratio,
+                    "silhouette": sil,
+                    "ch": ch,
+                    "time_sec": elapsed,
+                }
+                if best is None or _score_db(rec) > _score_db(best):
+                    best = rec
 
-      <div class="section">
-        <h2>客户分析</h2>
-        <p class="section-desc">基于 RFM-BC 聚类与指标百分位的综合分析。</p>
-        <ul class="analysis-list">
-          {% for item in analysis_items %}
-          <li><strong>{{ item.label }}：</strong>{{ item.text }}</li>
-          {% endfor %}
-        </ul>
-      </div>
+                db_rows.append(
+                    {
+                        "eps": f"{eps:.1f}",
+                        "min_samples": ms,
+                        "n_clusters": n_clusters,
+                        "noise_ratio": f"{noise_ratio:.1f}",
+                        "sil": f"{sil:.4f}" if not np.isnan(sil) else "N/A",
+                        "ch": f"{ch:.2f}" if not np.isnan(ch) else "N/A",
+                        "time": f"{elapsed:.3f}",
+                    }
+                )
 
-      <div class="section">
-        <h2>推荐营销方案</h2>
-        <p class="section-desc">根据客户群体特征推荐的营销策略，按优先级排序。</p>
-        <div class="rec-list">
-          {% for rec in marketing_recs %}
-          <div class="rec-card">
-            <span class="rec-priority">P{{ rec.priority }}</span>
-            <div>
-              <strong>{{ rec.title }}</strong>
-              <p>{{ rec.desc }}</p>
-            </div>
-          </div>
-          {% endfor %}
-        </div>
-      </div>
+        if best is None:
+            best = {"eps": 0.5, "min_samples": 5, "n_clusters": 0, "noise_ratio_pct": 0.0, "silhouette": float("nan")}
 
-      <div class="section">
-        <h2>详细指标</h2>
-        <div class="detail-grid">
-          <p><strong>总销售额：</strong>{{ total_sales }}</p>
-          <p><strong>订单数：</strong>{{ total_orders }}</p>
-          <p><strong>用户平均订单价格：</strong>{{ avg_order_value }}</p>
-          <p><strong>客户生命周期：</strong>{{ customer_lifetime }} 天</p>
-          <p><strong>购买频率：</strong>{{ purchase_frequency }}</p>
-          <p><strong>利润率：</strong>{{ profit_margin }}</p>
-          <p><strong>距上次购买：</strong>{{ last_purchase_days }} 天</p>
-          <p><strong>互动分：</strong>{{ engagement_score }}</p>
-        </div>
-      </div>
-    </div>
-  </body>
-  </html>
-"""
+        # 3) 最终对比：用推荐参数各跑一次
+        t0 = _time.perf_counter()
+        km = KMeans(n_clusters=int(best_k), random_state=42, n_init=10)
+        km_labels = km.fit_predict(X)
+        km_time = _time.perf_counter() - t0
+        km_sil = float(silhouette_score(X, km_labels))
+        km_ch = float(calinski_harabasz_score(X, km_labels))
 
+        t0 = _time.perf_counter()
+        db = DBSCAN(eps=float(best["eps"]), min_samples=int(best["min_samples"]))
+        db_labels = db.fit_predict(X)
+        db_time = _time.perf_counter() - t0
+        mask = db_labels >= 0
+        db_n_clusters = int(len(np.unique(db_labels[mask])))
+        if db_n_clusters >= 2 and int(mask.sum()) > db_n_clusters:
+            db_sil = float(silhouette_score(X[mask], db_labels[mask]))
+            db_ch = float(calinski_harabasz_score(X[mask], db_labels[mask]))
+        else:
+            db_sil = float("nan")
+            db_ch = float("nan")
+        db_noise = float((db_labels == -1).sum()) / float(len(db_labels)) * 100.0
 
-COMPARE_TEMPLATE = """
-<!doctype html>
-<html lang="zh-CN">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>多客户对比 - 客户画像</title>
-    <style>
-      * { box-sizing: border-box; }
-      body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; margin: 0; padding: 24px; background: #f8f9fa; }
-      .container { max-width: 1200px; margin: 0 auto; background: #fff; padding: 28px; border-radius: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
-      h1 { margin: 0 0 20px; font-size: 1.5em; color: #1a1a1a; }
-      .back { margin-bottom: 16px; }
-      .back a { color: #1976d2; text-decoration: none; font-size: 0.95em; }
-      .back a:hover { text-decoration: underline; }
-      .section { margin-bottom: 20px; }
-      .section h2 { font-size: 1.1em; margin: 0 0 8px; color: #333; }
-      .section-desc { color: #666; font-size: 0.9em; margin-bottom: 10px; }
-      .compare-form { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 14px 16px; background: #f8f9fa; border-radius: 8px; margin-bottom: 18px; }
-      .compare-form label { font-weight: 500; }
-      .compare-form input { flex: 1; min-width: 260px; padding: 8px 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; }
-      .compare-form button { padding: 8px 18px; background: #2196f3; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; }
-      .compare-form button:hover { background: #1976d2; }
-      table { border-collapse: collapse; width: 100%; font-size: 13px; margin-top: 6px; }
-      th, td { border: 1px solid #eee; padding: 8px 10px; text-align: center; }
-      th { background: #f5f5f5; font-weight: 600; }
-      tbody tr:nth-child(even) { background: #fafafa; }
-      .metric-name { text-align: left; white-space: nowrap; }
-      .pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.85em; background: #e3f2fd; color: #1565c0; }
-      .empty-hint { color: #999; font-size: 0.9em; margin-top: 8px; }
-    </style>
-  </head>
-  <body>
-    <div class="container">
-      <div class="back"><a href="/">&larr; 返回仪表盘</a></div>
-      <h1>多客户画像对比</h1>
+        compare = {
+            "kmeans": {
+                "n_clusters": int(best_k),
+                "sil": f"{km_sil:.4f}",
+                "ch": f"{km_ch:.2f}",
+                "time": f"{km_time:.3f}",
+            },
+            "dbscan": {
+                "n_clusters": int(db_n_clusters),
+                "noise_ratio": f"{db_noise:.1f}",
+                "sil": f"{db_sil:.4f}" if not np.isnan(db_sil) else "N/A",
+                "ch": f"{db_ch:.2f}" if not np.isnan(db_ch) else "N/A",
+                "time": f"{db_time:.3f}",
+            },
+        }
 
-      <div class="section">
-        <h2>选择客户</h2>
-        <p class="section-desc">在下方输入多个客户 ID，使用逗号或空格分隔，例如：AB-00363, AB-00421, AH-00722，或直接点击“随机选择客户”。</p>
-        <form class="compare-form" method="get" action="/compare">
-          <label for="ids">客户 ID 列表：</label>
-          <input id="ids" type="text" name="ids" value="{{ ids_text or '' }}" placeholder="例如：AB-00363, AB-00421, AH-00722" />
-          <button type="submit">对比</button>
-          <button type="submit" name="random" value="1">保留第一位 + 随机选择后两位</button>
-        </form>
-        {% if not rows %}
-          <p class="empty-hint">当前暂无对比结果，请在上方输入至少一个有效的客户 ID。</p>
-        {% endif %}
-      </div>
+        db_best_view = {
+            "eps": f"{float(best['eps']):.1f}",
+            "min_samples": int(best["min_samples"]),
+            "n_clusters": int(best.get("n_clusters", 0)),
+            "noise_ratio": f"{float(best.get('noise_ratio_pct', 0.0)):.1f}",
+            "sil": f"{float(best.get('silhouette', float('nan'))):.4f}" if not np.isnan(float(best.get("silhouette", float("nan")))) else "N/A",
+        }
 
-      {% if rows %}
-      <div class="section">
-        <h2>基本信息对比</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>客户 ID</th>
-              <th>姓名</th>
-              <th>群体</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for r in rows %}
-            <tr>
-              <td><a href="/user/{{ r.customer_id }}">{{ r.customer_id }}</a></td>
-              <td>{{ r.customer_name or '-' }}</td>
-              <td><span class="pill">{{ r.cluster_label or r.cluster or '-' }}</span></td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
+        # 论文可引用总结：自动拼接关键结论（含数值）
+        def _nz(x: str) -> str:
+            return x if x and x != "N/A" else "N/A"
 
-      <div class="section">
-        <h2>关键指标对比</h2>
-        <table>
-          <thead>
-            <tr>
-              <th class="metric-name">指标</th>
-              {% for r in rows %}
-              <th>{{ r.customer_id }}</th>
-              {% endfor %}
-            </tr>
-          </thead>
-          <tbody>
-            {% for m in metrics %}
-            <tr>
-              <td class="metric-name">{{ m.label }}</td>
-              {% for r in rows %}
-              <td>{{ r.metrics.get(m.key, '-') }}</td>
-              {% endfor %}
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-      <div class="section">
-        <h2>雷达图对比</h2>
-        <p class="section-desc">展示所选客户在各指标上的百分位对比（0–100）。</p>
-        {{ radar_chart_html | safe }}
-      </div>
-      {% endif %}
-    </div>
-  </body>
-  </html>
-"""
+        paper_summary = (
+            "在同一数据集与相同特征归一化设置下，对 K-Means 与 DBSCAN 进行聚类对比实验。"
+            f"K-Means 通过遍历 K∈{k_range} 并计算 SSE（手肘法）与轮廓系数（Silhouette）确定最佳簇数，"
+            f"本次实验推荐 K={int(best_k)}（Silhouette={_nz(compare['kmeans']['sil'])}，CH={_nz(compare['kmeans']['ch'])}，耗时={compare['kmeans']['time']}s）。"
+            f"DBSCAN 通过网格搜索 eps∈{eps_range}、min_samples∈{min_samples_range}，优先满足簇数≥2 且噪声比例<10%，并尽量提升轮廓系数，"
+            f"本次实验推荐 eps={db_best_view['eps']}、min_samples={db_best_view['min_samples']}（簇数={db_best_view['n_clusters']}，噪声={db_best_view['noise_ratio']}%，Silhouette={db_best_view['sil']}）。"
+            "最终对比显示："
+            f"K-Means（簇数={compare['kmeans']['n_clusters']}，Silhouette={_nz(compare['kmeans']['sil'])}，CH={_nz(compare['kmeans']['ch'])}）"
+            f"与 DBSCAN（簇数={compare['dbscan']['n_clusters']}，噪声={compare['dbscan']['noise_ratio']}%，Silhouette={_nz(compare['dbscan']['sil'])}，CH={_nz(compare['dbscan']['ch'])}）在质量与可用性上各有取舍。"
+            "结合业务解释性需求（需要固定、稳定的用户分层标签），K-Means 更适合作为最终用户分群方法；"
+            "DBSCAN 更适合用于识别离群/噪声样本或作为补充分析。"
+        )
+
+        return render_template(
+            "algo_compare.html",
+            error=None,
+            data_source=DATA_CSV_PATH,
+            n_samples=int(X.shape[0]),
+            features=features,
+            elbow_html=elbow_html,
+            sil_html=sil_html,
+            kmeans_table=kmeans_rows,
+            kmeans_best_k=int(best_k),
+            kmeans_best_sil=f"{best_sil:.4f}" if not np.isnan(best_sil) else "N/A",
+            dbscan_table=db_rows,
+            db_best=db_best_view,
+            compare=compare,
+            paper_summary=paper_summary,
+        )
+    except Exception as e:
+        error = str(e)
+        return render_template("algo_compare.html", error=error)
 
 
 def _safe(val):
@@ -772,7 +669,7 @@ def _compute_priority_label(cluster_label: str, score: float, last_days) -> str:
 @app.route("/compare")
 def compare_customers():
     """多客户对比页面。通过 ids 参数（逗号/空格分隔）选择多个客户进行关键指标对比。"""
-    df = get_profiles_scored()
+    df = get_profiles_scored_cached()
 
     # 支持两种输入：
     # 1) ids=AB-1,AB-2（文本输入框）
@@ -913,8 +810,8 @@ def compare_customers():
             )
             radar_chart_html = fig.to_html(include_plotlyjs="cdn", full_html=False)
 
-    return render_template_string(
-        COMPARE_TEMPLATE,
+    return render_template(
+        "compare.html",
         ids_text=ids_text,
         rows=rows,
         metrics=metrics_for_view,
@@ -1018,7 +915,7 @@ def _generate_marketing_recommendations(r: pd.Series, cluster_label: str) -> lis
 @app.route("/user/random")
 def user_random():
     """随机跳转到一位客户的画像报告页。"""
-    df = get_profiles_scored()
+    df = get_profiles_scored_cached()
     if df.empty:
         return "<h1>暂无客户数据</h1><a href='/'>返回</a>", 404
     row = df.sample(n=1).iloc[0]
@@ -1029,7 +926,7 @@ def user_random():
 @app.route("/user/<customer_id>")
 def user_profile(customer_id):
     """客户画像报告页：展示该用户在各指标上的百分位排名及可视化。"""
-    df = get_profiles_scored()
+    df = get_profiles_scored_cached()
     # 从全量画像里找到当前这个 Customer_ID 对应的行
     row = df[df["Customer_ID"].astype(str) == str(customer_id)]
     if row.empty:
@@ -1190,8 +1087,8 @@ def user_profile(customer_id):
     overall_score_val = _compute_overall_score(df, r, str(customer_id))
     priority_label = _compute_priority_label(cluster_label, overall_score_val, r.get("Last_Purchase_Days_Ago"))
 
-    return render_template_string(
-        USER_PROFILE_TEMPLATE,
+    return render_template(
+        "user_profile.html",
         customer_id=customer_id,
         customer_name=r.get("Customer_Name"),
         cluster=r.get("Cluster"),
@@ -1221,7 +1118,7 @@ def user_profile(customer_id):
 @app.route("/")
 def index():
     # 读取全量用户画像，并附加“活跃度分数/档位”两列
-    df = _add_activity_columns(get_profiles_scored())
+    df = _add_activity_columns(get_profiles_scored_cached())
 
     # 读取筛选和排序参数（客户 ID / 群体 / 排序字段 / 升降序 / 分页）
     customer_id = request.args.get("customer_id", "").strip() or None
@@ -1414,8 +1311,8 @@ def index():
         header_link = f'<th><a href="{href}">{link_text}</a></th>'
         table_html = table_html.replace(header_plain, header_link, 1)
 
-    return render_template_string(
-        INDEX_TEMPLATE,
+    return render_template(
+        "index.html",
         total_users=total_users,
         total_pages=total_pages,
         page=page,
@@ -1442,7 +1339,7 @@ def index():
 @app.route("/api/cluster-summary")
 def api_cluster_summary():
     """返回各聚类群体的汇总统计。"""
-    df = get_profiles_scored()
+    df = get_profiles_scored_cached()
     cluster_col = "Cluster_Label" if "Cluster_Label" in df.columns else "Cluster"
     if cluster_col not in df.columns:
         return jsonify({"error": "无聚类列"}), 400
@@ -1473,7 +1370,7 @@ def api_cluster_summary():
 @app.route("/api/users")
 def api_users():
     """分页查询用户列表。支持 customer_id、cluster 过滤。"""
-    df = get_profiles_scored()
+    df = get_profiles_scored_cached()
     customer_id = request.args.get("customer_id", "").strip() or None
     cluster = request.args.get("cluster", "").strip() or None
     page = max(1, int(request.args.get("page", 1)))
@@ -1516,7 +1413,7 @@ def api_users():
 @app.route("/api/user/<customer_id>")
 def api_user_detail(customer_id):
     """返回单个用户的详细画像。"""
-    df = get_profiles_scored()
+    df = get_profiles_scored_cached()
     row = df[df["Customer_ID"].astype(str) == str(customer_id)]
     if row.empty:
         return jsonify({"error": "用户不存在"}), 404
@@ -1527,6 +1424,222 @@ def api_user_detail(customer_id):
         elif isinstance(v, (np.integer, np.floating)):
             rec[k] = float(v) if np.issubdtype(type(v), np.floating) else int(v)
     return jsonify(rec)
+
+
+@app.route("/segment-overview")
+def segment_overview():
+    """群体总览页：输出各群体关键指标对比 + 雷达图/热力图，用于答辩展示与运营解读。"""
+    # 1) 读取全量画像（带百分位/排名），并补齐活跃度列，便于群体对比
+    df = _add_activity_columns(get_profiles_scored_cached())
+    if df.empty:
+        return "<h1>暂无客户数据</h1><a href='/'>返回</a>", 404
+
+    # 2) 决定群体列（优先用 Cluster_Label，否则退回 Cluster）
+    seg_col = "Cluster_Label" if "Cluster_Label" in df.columns else ("Cluster" if "Cluster" in df.columns else None)
+    if seg_col is None:
+        return "<h1>数据中缺少群体列（Cluster_Label/Cluster）</h1><a href='/'>返回</a>", 400
+
+    # 3) 总览卡片
+    total_users = int(len(df))
+    labels = df[seg_col].astype(str)
+    high_value_count = int(labels.str.contains("高价值", na=False).sum()) if seg_col == "Cluster_Label" else 0
+    churn_count = int(labels.str.contains("流失", na=False).sum()) if seg_col == "Cluster_Label" else 0
+
+    # 4) 群体对比指标（表格与图表共用）
+    metrics = [
+        ("Total_Sales", "消费金额"),
+        ("Total_Orders", "订单数"),
+        ("Avg_Order_Value", "用户平均订单价格"),
+        ("Purchase_Frequency", "购买频率"),
+        ("Engagement_Score", "互动分"),
+        ("Customer_Lifetime", "客户生命周期"),
+    ]
+    pct_metrics = [(f"{k}_Percentile", label) for k, label in metrics if f"{k}_Percentile" in df.columns]
+    # “最近购买”是越小越好，这里直接用 Last_Purchase_Days_Ago 的反向标准化做群体图展示
+    has_last = "Last_Purchase_Days_Ago" in df.columns
+
+    # 5) 群体统计表（均值/中位数 + 优势维度 + 样本客户）
+    segments = []
+    grp = df.groupby(seg_col, dropna=False)
+    for seg_name, g in grp:
+        name = str(seg_name)
+        cnt = int(len(g))
+        pct = round(cnt / total_users * 100, 1) if total_users else 0.0
+        href = "/?cluster=" + quote(name, safe="")
+
+        def _mean(col: str) -> str:
+            if col not in g.columns:
+                return "-"
+            v = float(pd.to_numeric(g[col], errors="coerce").mean())
+            return "-" if pd.isna(v) else f"{v:,.2f}"
+
+        def _median(col: str) -> str:
+            if col not in g.columns:
+                return "-"
+            v = float(pd.to_numeric(g[col], errors="coerce").median())
+            return "-" if pd.isna(v) else f"{v:,.1f}"
+
+        # 找“优势维度”：取群体百分位均值最高的前 2 个
+        strengths = "-"
+        if pct_metrics:
+            means = []
+            for col, label in pct_metrics:
+                v = float(pd.to_numeric(g[col], errors="coerce").mean())
+                if pd.isna(v):
+                    continue
+                means.append((v, label))
+            means.sort(key=lambda x: x[0], reverse=True)
+            if means:
+                strengths = "、".join([m[1] for m in means[:2]])
+
+        # 样本客户：优先按活跃度分数，其次按消费金额
+        order_cols = []
+        if "Activity_Score" in g.columns:
+            order_cols.append("Activity_Score")
+        if "Total_Sales" in g.columns:
+            order_cols.append("Total_Sales")
+        if order_cols:
+            sample_df = g.sort_values(by=order_cols, ascending=False).head(3)
+        else:
+            sample_df = g.head(3)
+
+        samples = [
+            {"id": str(r.get("Customer_ID")), "name": str(r.get("Customer_Name") or "-")}
+            for _, r in sample_df.iterrows()
+            if pd.notna(r.get("Customer_ID"))
+        ]
+
+        segments.append(
+            {
+                "name": name,
+                "href": href,
+                "count": cnt,
+                "pct": pct,
+                "activity_avg": _mean("Activity_Score"),
+                "sales_avg": _mean("Total_Sales"),
+                "orders_avg": _mean("Total_Orders"),
+                "aov_avg": _mean("Avg_Order_Value"),
+                "last_days_median": _median("Last_Purchase_Days_Ago"),
+                "strengths": strengths,
+                "samples": samples,
+            }
+        )
+
+    # 排序：按人数占比从高到低
+    segments.sort(key=lambda x: x["count"], reverse=True)
+
+    # 6) 雷达图：各群体的“指标百分位均值”（0-100）
+    radar_html = "<p class='sub'>暂无数据用于绘制雷达图。</p>"
+    if pct_metrics:
+        radar_labels = [label for _col, label in pct_metrics]
+        fig_r = go.Figure()
+        # 固定配色：让“高价值客户群”和“中高价值客户群”区分更明显
+        color_map = {
+            # 采用高区分度色板（红/蓝/绿/紫/灰），即使填充重叠也容易分辨
+            # 这里选更柔和的配色（更浅、更不刺眼），但色相依然区分明显
+            "高价值客户群": "#ef5350",          # 柔红
+            "中高价值客户群": "#42a5f5",        # 柔蓝
+            "中等价值客户群": "#66bb6a",        # 柔绿
+            "低价值潜在流失客户群": "#ab47bc",  # 柔紫
+            "低价值客户群": "#90a4ae",          # 柔灰蓝
+        }
+        fallback_colors = [
+            "#00bcd4", "#4caf50", "#f44336", "#795548", "#607d8b",
+            "#3f51b5", "#8bc34a", "#ff5722",
+        ]
+        def _hex_to_rgba(hex_color: str, alpha: float) -> str:
+            """将 #RRGGBB 转为 rgba(r,g,b,a)，用于给填充设置透明度但不影响边框。"""
+            h = hex_color.lstrip("#")
+            if len(h) != 6:
+                return f"rgba(0,0,0,{alpha})"
+            r = int(h[0:2], 16)
+            g = int(h[2:4], 16)
+            b = int(h[4:6], 16)
+            a = max(0.0, min(1.0, float(alpha)))
+            return f"rgba({r},{g},{b},{a})"
+
+        # 最多显示 8 个群体，避免拥挤
+        for idx, (seg_name, g) in enumerate(grp):
+            if idx >= 8:
+                break
+            seg_name_str = str(seg_name)
+            vals = []
+            for col, _label in pct_metrics:
+                v = float(pd.to_numeric(g[col], errors="coerce").mean())
+                v = 50.0 if pd.isna(v) else max(0.0, min(100.0, v))
+                vals.append(v)
+            if not vals:
+                continue
+            color = color_map.get(seg_name_str, fallback_colors[idx % len(fallback_colors)])
+            fig_r.add_trace(
+                go.Scatterpolar(
+                    r=vals + [vals[0]],
+                    theta=radar_labels + [radar_labels[0]],
+                    name=seg_name_str,
+                    mode="lines+markers",
+                    fill="toself",
+                    # 边框保持不透明并加粗，便于看清每个群体的“面积边界”
+                    line=dict(color=color, width=2),
+                    # 填充单独设置透明度，避免影响边框清晰度
+                    fillcolor=_hex_to_rgba(color, 0.08),
+                    # 顶点标记：强调每个维度的落点位置
+                    marker=dict(size=6, color=color, line=dict(width=1, color="#ffffff")),
+                )
+            )
+        if fig_r.data:
+            fig_r.update_layout(
+                polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+                showlegend=True,
+                height=420,
+                margin=dict(l=40, r=40, t=40, b=40),
+            )
+            radar_html = fig_r.to_html(include_plotlyjs="cdn", full_html=False)
+
+    # 7) 热力图：各群体关键特征“均值”并标准化到 0-100
+    heatmap_html = "<p class='sub'>暂无数据用于绘制热力图。</p>"
+    heat_cols = [k for k, _label in metrics if k in df.columns]
+    if has_last:
+        heat_cols = heat_cols + ["Last_Purchase_Days_Ago"]
+    if heat_cols:
+        heat_df = df.groupby(seg_col, dropna=False)[heat_cols].mean(numeric_only=True)
+        # 最近购买天数越小越好：先反向，让数值越大越“好”，再做 0-100 标准化
+        if "Last_Purchase_Days_Ago" in heat_df.columns:
+            heat_df["Last_Purchase_Days_Ago"] = heat_df["Last_Purchase_Days_Ago"].max() - heat_df["Last_Purchase_Days_Ago"]
+        norm = (heat_df - heat_df.min()) / (heat_df.max() - heat_df.min() + 1e-9) * 100
+        x_labels = []
+        label_map = {k: v for k, v in metrics}
+        for c in heat_cols:
+            if c == "Last_Purchase_Days_Ago":
+                x_labels.append("最近购买(越近越高)")
+            else:
+                x_labels.append(label_map.get(c, c))
+        fig_h = go.Figure(
+            data=go.Heatmap(
+                z=norm.values,
+                x=x_labels,
+                y=[str(i) for i in norm.index],
+                colorscale="Blues",
+                text=heat_df.round(2).values,
+                texttemplate="%{text}",
+                textfont={"size": 10},
+            )
+        )
+        fig_h.update_layout(
+            height=420,
+            margin=dict(l=40, r=20, t=40, b=40),
+        )
+        heatmap_html = fig_h.to_html(include_plotlyjs=False, full_html=False)
+
+    return render_template(
+        "segment_overview.html",
+        total_users=total_users,
+        segment_count=int(len(segments)),
+        high_value_count=high_value_count,
+        churn_count=churn_count,
+        segments=segments,
+        radar_html=radar_html,
+        heatmap_html=heatmap_html,
+    )
 
 
 if __name__ == "__main__":

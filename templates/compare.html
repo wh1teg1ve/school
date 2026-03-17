@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+
+{% block title %}多客户对比 - 客户画像{% endblock %}
+
+{% block content %}
+  <div class="back"><a href="/">&larr; 返回仪表盘</a></div>
+  <h1>多客户画像对比</h1>
+
+  <div class="section" style="background: #fff; box-shadow:none; padding: 0; margin-bottom: 18px;">
+    <h2>选择客户</h2>
+    <p class="section-desc">在下方输入多个客户 ID，使用逗号或空格分隔，例如：AB-00363, AB-00421, AH-00722，或直接点击“随机选择客户”。</p>
+    <form class="search-form" method="get" action="/compare">
+      <label for="ids">客户 ID 列表：</label>
+      <input id="ids" type="text" name="ids" value="{{ ids_text or '' }}" placeholder="例如：AB-00363, AB-00421, AH-00722" />
+      <button class="btn" type="submit">对比</button>
+      <button class="btn" type="submit" name="random" value="1">保留第一位 + 随机选择后两位</button>
+    </form>
+    {% if not rows %}
+      <p class="sub">当前暂无对比结果，请在上方输入至少一个有效的客户 ID。</p>
+    {% endif %}
+  </div>
+
+  {% if rows %}
+  <div class="section" style="box-shadow:none; padding: 0;">
+    <h2>基本信息对比</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>客户 ID</th>
+          <th>姓名</th>
+          <th>群体</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td><a href="/user/{{ r.customer_id }}">{{ r.customer_id }}</a></td>
+          <td>{{ r.customer_name or '-' }}</td>
+          <td><span class="pill">{{ r.cluster_label or r.cluster or '-' }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section" style="box-shadow:none; padding: 0;">
+    <h2>关键指标对比</h2>
+    <table>
+      <thead>
+        <tr>
+          <th class="left">指标</th>
+          {% for r in rows %}
+          <th>{{ r.customer_id }}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for m in metrics %}
+        <tr>
+          <td class="left">{{ m.label }}</td>
+          {% for r in rows %}
+          <td>{{ r.metrics.get(m.key, '-') }}</td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section">
+    <h2>雷达图对比</h2>
+    <p class="section-desc">展示所选客户在各指标上的百分位对比（0–100）。</p>
+    {{ radar_chart_html | safe }}
+  </div>
+  {% endif %}
+{% endblock %}
+
