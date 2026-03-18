@@ -102,6 +102,8 @@ python start_all.py
 python import_csv_to_mysql.py
 ```
 
+默认会写入表 `customer_profiles_rfmbc`（可用环境变量 `MYSQL_TABLE` 自定义表名）。
+
 3. 启用 MySQL 数据源后启动 Flask（Windows PowerShell 示例）：
 
 ```powershell
@@ -124,7 +126,8 @@ python flask_app.py
 - `MYSQL_USER`：默认 `root`
 - `MYSQL_PASSWORD`：默认空
 - `MYSQL_DATABASE`：默认 `customer_profile`
-- `MYSQL_TABLE`：默认 `customer_clusters`
+- `MYSQL_TABLE`：默认 `customer_profiles_rfmbc`
+- `RESET_TABLE`：导入脚本是否先清空表（默认 `1`，表示 `TRUNCATE` 后再导入）
 
 ## 常用脚本
 

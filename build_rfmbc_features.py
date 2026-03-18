@@ -116,6 +116,11 @@ def main() -> None:
                 "Avg_Order_Value": avg_order_value,
                 "Customer_Lifetime_Days": customer_lifetime_days,
                 "Days_Since_Last_Purchase": days_since_last_purchase,
+                # 论文/复现口径：用同一个 Ref_Date 计算时间窗口，避免“今天”导致结果漂移
+                # Ref_Date：全量数据中的最大订单日期（全局参考日）
+                "Ref_Date": pd.Series([ref_date] * len(total_orders), index=total_orders.index),
+                # Last_Purchase_Date：每个客户最后一次下单日期（真实日期）
+                "Last_Purchase_Date": last_date,
                 "Purchase_Frequency": purchase_frequency,
                 "Avg_Browsing_Time": avg_browsing_time,
                 "Unique_Products_Purchased": unique_products_purchased,
@@ -192,6 +197,8 @@ def main() -> None:
         "Avg_Order_Value",
         "Customer_Lifetime_Days",
         "Days_Since_Last_Purchase",
+        "Ref_Date",
+        "Last_Purchase_Date",
         "Purchase_Frequency",
         "Avg_Browsing_Time",
         "Unique_Products_Purchased",

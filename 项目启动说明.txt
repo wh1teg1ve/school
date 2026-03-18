@@ -25,7 +25,9 @@
 • 3. 启动 Flask 前设置环境变量启用 MySQL：
      Windows: set USE_MYSQL=1
      Linux/Mac: export USE_MYSQL=1
-• 可选环境变量：MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE, MYSQL_TABLE
+• 可选环境变量：MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE, MYSQL_TABLE, RESET_TABLE
+  - MYSQL_TABLE 默认：customer_profiles_rfmbc
+  - RESET_TABLE 默认：1（导入前 TRUNCATE，方便重复执行）
 
 
 三、启动 Flask 网页

@@ -88,6 +88,65 @@
   </div>
 
   <div class="section">
+    <h2>一、Cluster 0 vs Cluster 1 核心特征对比（分位数/中位数为主）</h2>
+    <p class="section-desc">该模块专门回答“聚类 0 和 1 的核心区别是什么”，用中位数与 25/75 分位避免均值受极端值影响。</p>
+    {% if cluster01 and cluster01.enabled %}
+      <div class="cards">
+        <div class="card"><strong>Cluster 0 人数</strong><div class="v">{{ cluster01.counts.c0 }}</div></div>
+        <div class="card"><strong>Cluster 1 人数</strong><div class="v">{{ cluster01.counts.c1 }}</div></div>
+        <div class="card"><strong>Cluster 0 业务命名</strong><div class="v">{{ cluster01.labels.c0 }}</div></div>
+        <div class="card"><strong>Cluster 1 业务命名</strong><div class="v">{{ cluster01.labels.c1 }}</div></div>
+      </div>
+
+      <div class="table-wrap" style="margin-top:10px;">
+        <table class="table-dense table-small">
+          <thead>
+            <tr>
+              <th class="left">指标</th>
+              <th>Cluster 0（25%/50%/75%）</th>
+              <th>Cluster 1（25%/50%/75%）</th>
+              <th>中位数差异（0-1）</th>
+              <th>中位数倍数（0/1）</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in cluster01.rows %}
+              <tr>
+                <td class="left">{{ r.label }}</td>
+                <td>
+                  {% if r.c0.p25 is not none %}{{ "%.2f"|format(r.c0.p25) }} / {{ "%.2f"|format(r.c0.p50) }} / {{ "%.2f"|format(r.c0.p75) }}{% else %}-{% endif %}
+                </td>
+                <td>
+                  {% if r.c1.p25 is not none %}{{ "%.2f"|format(r.c1.p25) }} / {{ "%.2f"|format(r.c1.p50) }} / {{ "%.2f"|format(r.c1.p75) }}{% else %}-{% endif %}
+                </td>
+                <td>{% if r.delta_median is not none %}{{ "%.2f"|format(r.delta_median) }}{% else %}-{% endif %}</td>
+                <td>{% if r.ratio_median is not none %}{{ "%.2f"|format(r.ratio_median) }}×{% else %}-{% endif %}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="seg-meta wraptext" style="margin-top:10px;">
+        <span class="label">差异化策略（群体级）：</span>
+        <ul class="analysis-list" style="margin-top:8px;">
+          {% for s in cluster01.strategies %}
+            <li><strong>{{ s.cluster }}（{{ s.name }}）</strong>
+              <ul>
+                {% for it in s.lines %}
+                  <li>{{ it }}</li>
+                {% endfor %}
+              </ul>
+            </li>
+          {% endfor %}
+        </ul>
+      </div>
+    {% else %}
+      <p class="sub">当前数据未同时包含 Cluster=0 与 Cluster=1，因此无法生成该对比模块。</p>
+    {% endif %}
+  </div>
+
+  <div class="section">
     <h2>二、高价值用户分析模块（从“名单”到“特征总结”）</h2>
     <p class="section-desc">{{ high_value_def }}</p>
     {% if high_value_common %}
@@ -113,6 +172,15 @@
         {% endfor %}
         {% if not high_value_cluster_dist %}<span class="sub">暂无</span>{% endif %}
       </div>
+
+      {% if high_value_cluster01_dist %}
+      <div class="seg-meta wraptext" style="margin-top:8px;">
+        <span class="label">高价值用户在 Cluster 0/1 的分布：</span>
+        {% for x in high_value_cluster01_dist %}
+          <span class="pill">Cluster {{ x.cluster }}：{{ x.count }}（{{ x.pct }}%）</span>
+        {% endfor %}
+      </div>
+      {% endif %}
 
       <div class="seg-meta" style="margin-top:10px;">
         <span class="label">高价值用户 Top5（示例）：</span>
@@ -163,7 +231,7 @@
         <table class="table-dense table-small">
           <thead>
             <tr>
-              <th>客户</th><th>群体</th><th>总销售额</th><th>购买频率</th><th>距上次购买(天)</th><th>最后偏好品类</th>
+              <th>客户</th><th>群体</th><th>总销售额</th><th>购买频率</th><th>距上次购买(天)</th><th>推算最后购买日期</th><th>最后偏好品类</th>
             </tr>
           </thead>
           <tbody>
@@ -174,6 +242,7 @@
               <td>{{ "%.2f"|format(u.sales) }}</td>
               <td>{{ "%.4f"|format(u.freq) }}</td>
               <td>{{ "%.0f"|format(u.last_days) }}</td>
+              <td class="left">{{ u.last_date }}</td>
               <td class="left">{{ u.fav }}</td>
             </tr>
             {% endfor %}
@@ -199,6 +268,15 @@
           <span class="pill">{{ x.cluster }}：{{ x.count }}（{{ x.pct }}%）</span>
         {% endfor %}
       </div>
+
+      {% if engage_cluster01_dist %}
+      <div class="seg-meta wraptext" style="margin-top:8px;">
+        <span class="label">高互动用户在 Cluster 0/1 的分布：</span>
+        {% for x in engage_cluster01_dist %}
+          <span class="pill">Cluster {{ x.cluster }}：{{ x.count }}（{{ x.pct }}%）</span>
+        {% endfor %}
+      </div>
+      {% endif %}
       <div class="seg-meta wraptext" style="margin-top:8px;">
         <span class="label">高互动→高价值关联：</span>
         {% if engage_high_value_overlap is not none %}
@@ -207,6 +285,113 @@
           <span class="sub">缺少 Total_Sales 或阈值，无法计算</span>
         {% endif %}
       </div>
+
+      {% if engage_top_fav %}
+      <div class="seg-meta wraptext" style="margin-top:8px;">
+        <span class="label">高互动用户偏好 TOP3：</span>
+        {% for k, v in engage_top_fav.items() %}
+          <span class="pill">{{ k }}：{{ v }}</span>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      {% if engage_overlap_matrix %}
+      <div class="seg-meta" style="margin-top:10px;">
+        <span class="label">高互动用户交叉画像（高价值/高流失）：</span>
+        <div class="table-wrap" style="margin-top:8px;">
+          <table class="table-dense table-small">
+            <thead><tr><th class="left">子群</th><th>人数</th><th>占高互动比例</th></tr></thead>
+            <tbody>
+              {% for x in engage_overlap_matrix %}
+              <tr>
+                <td class="left">{{ x.label }}</td>
+                <td>{{ x.count }}</td>
+                <td>{{ x.pct }}%</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {% endif %}
+
+      {% if engage_top_users %}
+      <div class="seg-meta" style="margin-top:10px;">
+        <span class="label">高互动用户 Top5（示例）：</span>
+        <div class="table-wrap" style="margin-top:8px;">
+          <table class="table-dense table-small">
+            <thead>
+              <tr>
+                <th>客户</th><th>互动总分</th><th>总销售额</th><th>订单数</th><th>购买频率</th><th>群体</th><th>偏好品类</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for u in engage_top_users %}
+              <tr>
+                <td class="left"><a href="/user/{{ u.id }}">{{ u.id }}</a><span class="sub">（{{ u.name }}）</span></td>
+                <td>{{ "%.0f"|format(u.eng) }}</td>
+                <td>{{ "%.2f"|format(u.sales) }}</td>
+                <td>{{ "%.0f"|format(u.orders) }}</td>
+                <td>{{ "%.4f"|format(u.freq) }}</td>
+                <td class="left">{{ u.cluster }}</td>
+                <td class="left">{{ u.fav }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {% endif %}
+
+      {% if engage_subgroup_quantiles %}
+      <div class="seg-meta" style="margin-top:10px;">
+        <span class="label">高互动子群核心特征（分位数对比）：</span>
+        <div class="table-wrap" style="margin-top:8px;">
+          <table class="table-dense table-small">
+            <thead>
+              <tr>
+                <th class="left">子群</th>
+                <th>人数</th>
+                <th class="left">分位数（25%/50%/75%）</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for g in engage_subgroup_quantiles %}
+              <tr>
+                <td class="left">{{ g.name }}</td>
+                <td>{{ g.count }}</td>
+                <td class="left">
+                  {% for c in g.cols %}
+                    <span class="pill">
+                      {{ c.label }}：
+                      {% if c.q.p25 is not none %}{{ "%.2f"|format(c.q.p25) }} / {{ "%.2f"|format(c.q.p50) }} / {{ "%.2f"|format(c.q.p75) }}{% else %}-{% endif %}
+                    </span>
+                  {% endfor %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {% endif %}
+
+      {% if engage_strategies %}
+      <div class="seg-meta wraptext" style="margin-top:10px;">
+        <span class="label">差异化策略（高互动分层）：</span>
+        <ul class="analysis-list" style="margin-top:8px;">
+          {% for s in engage_strategies %}
+            <li><strong>{{ s.name }}</strong>
+              <ul>
+                {% for it in s.lines %}
+                  <li>{{ it }}</li>
+                {% endfor %}
+              </ul>
+            </li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
     {% else %}
       <p class="sub">缺少 Total_Engagement_Score，无法计算高互动模块。</p>
     {% endif %}

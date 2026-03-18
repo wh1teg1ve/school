@@ -2,7 +2,7 @@
 基于 everyuser 画像接口的简单 Flask 网页
 
 用法：
-1. 在当前目录下确保有 `customer_clusters_simple.csv` 数据文件。
+1. 在当前目录下确保有 `customer_features_rfmbc.csv` 数据文件。
 2. 在终端中安装依赖（如有需要）：
      pip install flask pandas numpy
 3. 运行本服务：
@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import os
 import time
-from urllib.parse import quote
+from urllib.parse import quote, quote_plus
 
 from flask import Flask, jsonify, redirect, render_template, request
 import pandas as pd
@@ -38,7 +38,7 @@ MYSQL_CONFIG = {
     "charset": "utf8mb4",
 }
 # 使用的数据表名
-MYSQL_TABLE = os.environ.get("MYSQL_TABLE", "customer_clusters")
+MYSQL_TABLE = os.environ.get("MYSQL_TABLE", "customer_profiles_rfmbc")
 
 
 def _load_from_csv(path: str = DATA_CSV_PATH) -> pd.DataFrame:
@@ -48,14 +48,19 @@ def _load_from_csv(path: str = DATA_CSV_PATH) -> pd.DataFrame:
 
 def _load_from_mysql() -> pd.DataFrame:
     """从 MySQL 加载用户特征数据。"""
-    import pymysql
+    from sqlalchemy import create_engine
 
-    conn = pymysql.connect(**MYSQL_CONFIG)
-    try:
-        df = pd.read_sql(f"SELECT * FROM `{MYSQL_TABLE}`", conn)
-        return df
-    finally:
-        conn.close()
+    user = MYSQL_CONFIG.get("user", "root")
+    password = quote_plus(str(MYSQL_CONFIG.get("password", "")))
+    host = MYSQL_CONFIG.get("host", "127.0.0.1")
+    port = int(MYSQL_CONFIG.get("port", 3306))
+    db = MYSQL_CONFIG.get("database", "customer_profile")
+    charset = MYSQL_CONFIG.get("charset", "utf8mb4")
+
+    url = f"mysql+pymysql://{user}:{password}@{host}:{port}/{db}?charset={charset}"
+    engine = create_engine(url, pool_pre_ping=True)
+    # 使用 SQLAlchemy Engine 给 pandas，避免 DBAPI2 warning，并让类型/读取更标准
+    return pd.read_sql(f"SELECT * FROM `{MYSQL_TABLE}`", con=engine)
 
 
 def load_data(path: str = DATA_CSV_PATH) -> pd.DataFrame:
@@ -139,7 +144,11 @@ def create_individual_profiles(df: pd.DataFrame) -> pd.DataFrame:
             "Purchase_Frequency": purchase_freq,
             "Profit_Margin": profit_margin,
             "Last_Purchase_Days_Ago": last_purchase_days_ago,
+            "Last_Purchase_Date": row.get("Last_Purchase_Date", None),
+            "Ref_Date": row.get("Ref_Date", None),
             "Engagement_Score": engagement_score,
+            # 为兼容不同数据源/论文表述，这里同时保留“互动总分”原字段名
+            "Total_Engagement_Score": engagement_score,
             "Segment": row.get("Segment", None),
             "Region": row.get("Region", None),
             "Country": row.get("Country", None),
@@ -1199,6 +1208,11 @@ def user_profile(customer_id):
 def index():
     # 读取全量用户画像，并附加“活跃度分数/档位”两列
     df = _add_activity_columns(get_profiles_scored_cached())
+    # 兼容历史/不同数据源列名：避免 KeyError: 'Customer_ID'
+    if "Customer_ID" not in df.columns and "Customer ID" in df.columns:
+        df = df.rename(columns={"Customer ID": "Customer_ID"})
+    if "Customer_Name" not in df.columns and "Customer Name" in df.columns:
+        df = df.rename(columns={"Customer Name": "Customer_Name"})
     df_full = df.copy()
 
     # 读取筛选和排序参数（客户 ID / 群体 / 排序字段 / 升降序 / 分页）
@@ -1409,6 +1423,23 @@ def index():
     existing_cols = [c for c in display_cols if c in df.columns]
     df_page = df.iloc[start:end]
     df_display = df_page[existing_cols].copy()
+
+    # 兜底：保证后续一定能拿到 Customer_ID / Customer_Name
+    # 有些历史数据源可能使用 "Customer ID" / "Customer Name"
+    if "Customer_ID" not in df_display.columns:
+        if "Customer ID" in df_page.columns:
+            df_display["Customer_ID"] = df_page["Customer ID"].astype(str).values
+        elif "Customer_ID" in df_page.columns:
+            df_display["Customer_ID"] = df_page["Customer_ID"].astype(str).values
+        else:
+            df_display["Customer_ID"] = ""
+    if "Customer_Name" not in df_display.columns:
+        if "Customer Name" in df_page.columns:
+            df_display["Customer_Name"] = df_page["Customer Name"].astype(str).values
+        elif "Customer_Name" in df_page.columns:
+            df_display["Customer_Name"] = df_page["Customer_Name"].astype(str).values
+        else:
+            df_display["Customer_Name"] = ""
 
     # 用“高/中/低(分数)”展示活跃度，替代原来的消费金额列
     if "Activity_Score" in df_display.columns and "Activity_Level" in df_page.columns:
@@ -1905,12 +1936,149 @@ def segment_overview():
     def _num(s: pd.Series) -> pd.Series:
         return pd.to_numeric(s, errors="coerce")
 
+    # ---- Cluster 0 vs Cluster 1：分位数对比 + 业务命名 + 策略 ----
+    # 说明：开题/论文里常需要对“两个主要聚类”做更细的统计（中位数/分位数），避免只看均值。
+    cluster01 = {
+        "enabled": False,
+        "counts": {},
+        "labels": {},
+        "rows": [],
+        "strategies": [],
+    }
+    if "Cluster" in df.columns:
+        c = _num(df["Cluster"]).fillna(-1).astype(int)
+        df["_cluster_int"] = c
+        if (c == 0).any() and (c == 1).any():
+            cluster01["enabled"] = True
+            df0 = df[df["_cluster_int"] == 0].copy()
+            df1 = df[df["_cluster_int"] == 1].copy()
+            cluster01["counts"] = {"c0": int(len(df0)), "c1": int(len(df1))}
+
+            def _qstats(frame: pd.DataFrame, col: str) -> dict:
+                if col not in frame.columns:
+                    return {"mean": None, "p25": None, "p50": None, "p75": None}
+                s = _num(frame[col]).dropna()
+                if s.empty:
+                    return {"mean": None, "p25": None, "p50": None, "p75": None}
+                return {
+                    "mean": float(s.mean()),
+                    "p25": float(s.quantile(0.25)),
+                    "p50": float(s.quantile(0.50)),
+                    "p75": float(s.quantile(0.75)),
+                }
+
+            compare_cols = [
+                ("Total_Sales", "总销售额"),
+                ("Total_Orders", "订单数"),
+                ("Customer_Lifetime_Days", "客户生命周期(天)"),
+                ("Purchase_Frequency", "购买频率"),
+                ("Avg_Order_Value", "用户平均订单价格"),
+                ("Last_Purchase_Days_Ago", "距上次购买(天)"),
+                ("Total_Engagement_Score", "互动总分"),
+            ]
+            rows = []
+            for col, label in compare_cols:
+                s0 = _qstats(df0, col)
+                s1 = _qstats(df1, col)
+                if all(v is None for v in s0.values()) and all(v is None for v in s1.values()):
+                    continue
+                # 用中位数差异作为“核心区别”主结论（更稳健）
+                med0 = s0.get("p50")
+                med1 = s1.get("p50")
+                delta = None
+                ratio = None
+                if med0 is not None and med1 is not None:
+                    delta = float(med0) - float(med1)
+                    if med1 != 0:
+                        ratio = float(med0) / float(med1)
+                rows.append(
+                    {
+                        "label": label,
+                        "col": col,
+                        "c0": s0,
+                        "c1": s1,
+                        "delta_median": delta,
+                        "ratio_median": ratio,
+                    }
+                )
+            cluster01["rows"] = rows
+
+            def _churn90_pct(frame: pd.DataFrame) -> float:
+                if "Last_Purchase_Days_Ago" not in frame.columns:
+                    return 0.0
+                s = _num(frame["Last_Purchase_Days_Ago"]).fillna(0.0)
+                return round(float((s > 90).mean()) * 100.0, 1)
+
+            # 业务命名（仅对 0/1）：按“销售/频率/流失风险”相对关系命名，便于论文解释
+            s0_sales = _qstats(df0, "Total_Sales")["p50"]
+            s1_sales = _qstats(df1, "Total_Sales")["p50"]
+            s0_freq = _qstats(df0, "Purchase_Frequency")["p50"]
+            s1_freq = _qstats(df1, "Purchase_Frequency")["p50"]
+            c0_churn90 = _churn90_pct(df0)
+            c1_churn90 = _churn90_pct(df1)
+
+            def _pick_name(
+                sales_med: float | None,
+                other_sales_med: float | None,
+                freq_med: float | None,
+                other_freq_med: float | None,
+                churn90: float,
+            ) -> str:
+                sales_hi = (
+                    sales_med is not None
+                    and other_sales_med is not None
+                    and sales_med >= other_sales_med
+                )
+                freq_hi = (
+                    freq_med is not None
+                    and other_freq_med is not None
+                    and freq_med >= other_freq_med
+                )
+                low_churn = churn90 <= 5.0
+                high_churn = churn90 >= 15.0
+                if sales_hi and freq_hi and low_churn:
+                    return "高价值高忠诚用户"
+                if sales_hi and (high_churn or churn90 >= 10.0):
+                    return "高价值需挽留用户"
+                if (not sales_hi) and high_churn:
+                    return "中低价值潜力流失用户"
+                if sales_hi:
+                    return "高价值活跃用户"
+                return "中等价值用户"
+
+            c0_name = _pick_name(s0_sales, s1_sales, s0_freq, s1_freq, c0_churn90)
+            c1_name = _pick_name(s1_sales, s0_sales, s1_freq, s0_freq, c1_churn90)
+            cluster01["labels"] = {"c0": c0_name, "c1": c1_name}
+
+            # 差异化策略（群体级）
+            cluster01["strategies"] = [
+                {
+                    "cluster": "Cluster 0",
+                    "name": c0_name,
+                    "lines": [
+                        "若为高价值高忠诚：会员等级/专属客服/提前购；重点是维持体验与复购。",
+                        "若为高价值需挽留：设置“回流券+限时权益”，并按常购品类做个性化召回。",
+                        "若为潜力流失：低门槛激活（新人/回归礼包、免邮券），用内容引导首次/二次转化。",
+                    ],
+                },
+                {
+                    "cluster": "Cluster 1",
+                    "name": c1_name,
+                    "lines": [
+                        "若为高价值高忠诚：用订阅/定期购、组合购提升客单价与留存。",
+                        "若互动高但未高价值：口碑任务/评价有礼/种草内容，推动互动转订单。",
+                        "若流失风险更高：重点做“最后一次购买后的 7/30/60 天”分层触达。",
+                    ],
+                },
+            ]
+
     # ---- 高价值用户：按 Total_Sales 前 20% ----
     high_value_def = "高价值用户定义：按总销售额（Total_Sales）从高到低取前 20%（80 分位阈值）。"
     high_value_threshold = None
     high_value_common = {}
     high_value_users = []
     high_value_cluster_dist = []
+    high_value_cluster01_dist = []
     if "Total_Sales" in df.columns:
         sales = _num(df["Total_Sales"]).fillna(0.0)
         high_value_threshold = float(sales.quantile(0.80))
@@ -1963,8 +2131,19 @@ def segment_overview():
                     {"cluster": str(k), "count": int(cnt), "pct": round(int(cnt) / len(hv) * 100.0, 1)}
                 )
 
+        # Cluster 0/1 分布：用于论文里“高价值主要集中在哪个聚类”
+        if "Cluster" in hv.columns and not hv.empty:
+            c = _num(hv["Cluster"]).fillna(-1).astype(int)
+            hv0 = int((c == 0).sum())
+            hv1 = int((c == 1).sum())
+            denom = int(len(hv)) or 1
+            high_value_cluster01_dist = [
+                {"cluster": "0", "count": hv0, "pct": round(hv0 / denom * 100.0, 1)},
+                {"cluster": "1", "count": hv1, "pct": round(hv1 / denom * 100.0, 1)},
+            ]
+
     # ---- 高流失风险：阈值规则 + >90 天未购拆解 ----
-    churn_def = "高流失风险阈值：购买频率 < 0.035 且 距上次购买天数 > 60；并统计 >90 天未购用户。"
+    # 说明：购买频率不同数据源差异较大，固定阈值容易“命中太少/太多”，这里用分位数自适应更稳健。
     last_days_series = None
     if "Last_Purchase_Days_Ago" in df.columns:
         last_days_series = _num(df["Last_Purchase_Days_Ago"]).fillna(0.0)
@@ -1974,7 +2153,16 @@ def segment_overview():
         last_days_series = pd.Series([0.0] * len(df))
 
     freq_series = _num(df["Purchase_Frequency"]).fillna(0.0) if "Purchase_Frequency" in df.columns else pd.Series([0.0] * len(df))
-    churn_rule_count = int(((freq_series < 0.035) & (last_days_series > 60)).sum())
+    # 低频阈值：默认取 20 分位（若数据不足则回退固定值）
+    try:
+        freq_thr = float(freq_series.quantile(0.20))
+        if pd.isna(freq_thr) or freq_thr <= 0:
+            raise ValueError("bad freq_thr")
+    except Exception:
+        freq_thr = 0.035
+
+    churn_def = f"高流失风险阈值：购买频率 < {freq_thr:.4f}（20分位）且 距上次购买天数 > 60；并统计 >90 天未购用户。"
+    churn_rule_count = int(((freq_series < freq_thr) & (last_days_series > 60)).sum())
 
     churn90_df = df[last_days_series > 90].copy()
     churn90_count = int(len(churn90_df))
@@ -1989,7 +2177,26 @@ def segment_overview():
             )
 
     churn90_show = churn90_df.sort_values(by="Total_Sales", ascending=False).head(10) if "Total_Sales" in churn90_df.columns else churn90_df.head(10)
+    # 最后购买日期：优先使用特征工程产物的真实 Last_Purchase_Date；
+    # 若缺失，则回退为 Ref_Date - 距上次购买天数（仍可复现，不使用“今天”避免漂移）。
+    import datetime as _dt
     for _, r in churn90_show.iterrows():
+        last_days_val = float(_num(pd.Series([r.get("Last_Purchase_Days_Ago", r.get("Days_Since_Last_Purchase"))])).iloc[0] or 0.0)
+        last_date = r.get("Last_Purchase_Date")
+        if last_date is None or (isinstance(last_date, float) and pd.isna(last_date)):
+            ref = r.get("Ref_Date")
+            try:
+                ref_dt = pd.to_datetime(ref, errors="coerce")
+                if pd.isna(ref_dt):
+                    raise ValueError("bad ref")
+                last_date = (ref_dt.date() - _dt.timedelta(days=int(last_days_val))).isoformat()
+            except Exception:
+                last_date = "-"
+        else:
+            try:
+                last_date = pd.to_datetime(last_date, errors="coerce").date().isoformat()
+            except Exception:
+                last_date = str(last_date)
         churn90_details.append(
             {
                 "id": str(r.get("Customer_ID")),
@@ -1997,19 +2204,31 @@ def segment_overview():
                 "cluster": str(r.get("Cluster_Label") or r.get("Cluster") or "-"),
                 "sales": float(_num(pd.Series([r.get("Total_Sales")])).iloc[0] or 0.0) if "Total_Sales" in df.columns else 0.0,
                 "freq": float(_num(pd.Series([r.get("Purchase_Frequency")])).iloc[0] or 0.0) if "Purchase_Frequency" in df.columns else 0.0,
-                "last_days": float(_num(pd.Series([r.get("Last_Purchase_Days_Ago", r.get("Days_Since_Last_Purchase"))])).iloc[0] or 0.0),
+                "last_days": last_days_val,
+                "last_date": last_date,
                 "fav": str(r.get("Favorite_Product") or "-"),
             }
         )
 
-    # ---- 高互动用户：按 Total_Engagement_Score 前 20% ----
-    engage_def = "高互动用户定义：按互动总分（Total_Engagement_Score）取前 20%（80 分位阈值）。"
+    # ---- 高互动用户：按互动总分前 20% ----
+    engage_def = "高互动用户定义：按互动总分取前 20%（80 分位阈值）。"
     engage_threshold = None
     engage_summary = {}
     engage_cluster_dist = []
     engage_high_value_overlap = None
-    if "Total_Engagement_Score" in df.columns:
-        eng = _num(df["Total_Engagement_Score"]).fillna(0.0)
+    engage_cluster01_dist = []
+    engage_overlap_matrix = []
+    engage_top_fav = {}
+    engage_top_users = []
+    engage_subgroup_quantiles = []
+    engage_strategies = []
+    engage_col = (
+        "Total_Engagement_Score"
+        if "Total_Engagement_Score" in df.columns
+        else ("Engagement_Score" if "Engagement_Score" in df.columns else None)
+    )
+    if engage_col:
+        eng = _num(df[engage_col]).fillna(0.0)
         engage_threshold = float(eng.quantile(0.80))
         he = df[eng >= engage_threshold].copy()
         engage_summary = {
@@ -2029,6 +2248,129 @@ def segment_overview():
         if "Total_Sales" in he.columns and high_value_threshold is not None and not he.empty:
             he_sales = _num(he["Total_Sales"]).fillna(0.0)
             engage_high_value_overlap = round(float((he_sales >= high_value_threshold).mean()) * 100.0, 1)
+
+        # 高互动的 Cluster 0/1 分布
+        if "Cluster" in he.columns and not he.empty:
+            c = _num(he["Cluster"]).fillna(-1).astype(int)
+            he0 = int((c == 0).sum())
+            he1 = int((c == 1).sum())
+            denom = int(len(he)) or 1
+            engage_cluster01_dist = [
+                {"cluster": "0", "count": he0, "pct": round(he0 / denom * 100.0, 1)},
+                {"cluster": "1", "count": he1, "pct": round(he1 / denom * 100.0, 1)},
+            ]
+
+        # 高互动用户的“高价值/高流失”交叉画像
+        if not he.empty:
+            is_hv = (
+                (_num(he["Total_Sales"]).fillna(0.0) >= float(high_value_threshold))
+                if ("Total_Sales" in he.columns and high_value_threshold is not None)
+                else pd.Series([False] * len(he), index=he.index)
+            )
+            is_churn90 = (
+                (_num(he["Last_Purchase_Days_Ago"]).fillna(0.0) > 90)
+                if "Last_Purchase_Days_Ago" in he.columns
+                else pd.Series([False] * len(he), index=he.index)
+            )
+            # 2x2 矩阵：HV x Churn90
+            def _pct2(mask: pd.Series) -> float:
+                return round(float(mask.mean()) * 100.0, 1) if len(mask) else 0.0
+
+            engage_overlap_matrix = [
+                {"label": "高互动 ∩ 高价值", "count": int((is_hv).sum()), "pct": _pct2(is_hv)},
+                {"label": "高互动 ∩ 非高价值", "count": int((~is_hv).sum()), "pct": _pct2(~is_hv)},
+                {"label": "高互动 ∩ >90天未购", "count": int((is_churn90).sum()), "pct": _pct2(is_churn90)},
+                {"label": "高互动 ∩ 非>90天未购", "count": int((~is_churn90).sum()), "pct": _pct2(~is_churn90)},
+            ]
+
+        if "Favorite_Product" in he.columns:
+            engage_top_fav = he["Favorite_Product"].astype(str).value_counts().head(3).to_dict()
+
+        # Top 样本名单：按互动分从高到低取 Top5
+        he_top = he.sort_values(by=engage_col, ascending=False).head(5)
+        for _, r in he_top.iterrows():
+            engage_top_users.append(
+                {
+                    "id": str(r.get("Customer_ID")),
+                    "name": str(r.get("Customer_Name") or "-"),
+                    "eng": float(_num(pd.Series([r.get(engage_col)])).iloc[0] or 0.0),
+                    "sales": float(_num(pd.Series([r.get("Total_Sales")])).iloc[0] or 0.0) if "Total_Sales" in he.columns else 0.0,
+                    "orders": float(_num(pd.Series([r.get("Total_Orders")])).iloc[0] or 0.0) if "Total_Orders" in he.columns else 0.0,
+                    "freq": float(_num(pd.Series([r.get("Purchase_Frequency")])).iloc[0] or 0.0) if "Purchase_Frequency" in he.columns else 0.0,
+                    "cluster": str(r.get("Cluster_Label") or r.get("Cluster") or "-"),
+                    "fav": str(r.get("Favorite_Product") or "-"),
+                }
+            )
+
+        # 子群分位数对比：高互动∩高价值 / 高互动∩非高价值 / 高互动∩高流失(>90天未购)
+        def _q(frame: pd.DataFrame, col: str) -> dict:
+            if col not in frame.columns:
+                return {"p25": None, "p50": None, "p75": None}
+            s = _num(frame[col]).dropna()
+            if s.empty:
+                return {"p25": None, "p50": None, "p75": None}
+            return {
+                "p25": float(s.quantile(0.25)),
+                "p50": float(s.quantile(0.50)),
+                "p75": float(s.quantile(0.75)),
+            }
+
+        hv_mask = (
+            (_num(he["Total_Sales"]).fillna(0.0) >= float(high_value_threshold))
+            if ("Total_Sales" in he.columns and high_value_threshold is not None)
+            else pd.Series([False] * len(he), index=he.index)
+        )
+        churn90_mask = (
+            (_num(he["Last_Purchase_Days_Ago"]).fillna(0.0) > 90)
+            if "Last_Purchase_Days_Ago" in he.columns
+            else pd.Series([False] * len(he), index=he.index)
+        )
+        subgroups = [
+            ("高互动 ∩ 高价值", he[hv_mask].copy()),
+            ("高互动 ∩ 非高价值", he[~hv_mask].copy()),
+            ("高互动 ∩ >90天未购", he[churn90_mask].copy()),
+        ]
+        key_cols = [
+            ("Total_Sales", "总销售额"),
+            ("Total_Orders", "订单数"),
+            ("Avg_Order_Value", "用户平均订单价格"),
+            ("Purchase_Frequency", "购买频率"),
+        ]
+        for name, sub in subgroups:
+            if sub.empty:
+                continue
+            row = {"name": name, "count": int(len(sub)), "cols": []}
+            for col, label in key_cols:
+                row["cols"].append({"label": label, "q": _q(sub, col)})
+            engage_subgroup_quantiles.append(row)
+
+        # 差异化策略：按高互动子群落地
+        engage_strategies = [
+            {
+                "name": "高互动且高价值",
+                "lines": [
+                    "口碑裂变：邀请其参与评价有礼/晒单返券/内容共创，提高传播与复购。",
+                    "会员专属：提供新品优先试用、专属客服、VIP 权益，增强粘性。",
+                    "高频触达：围绕其常购品类做个性化推荐（搭配购/组合购）。",
+                ],
+            },
+            {
+                "name": "高互动但非高价值",
+                "lines": [
+                    "转化类活动：用低门槛券/加购立减推动首单或提升客单价。",
+                    "内容引导：用种草内容+相关推荐，把浏览行为导向下单。",
+                    "分层测试：A/B 测试优惠力度与触达频次，避免“只互动不购买”。",
+                ],
+            },
+            {
+                "name": "高互动但高流失风险（>90天未购）",
+                "lines": [
+                    "再营销召回：按常购品类推送“回流券+限时免邮”，强调稀缺与时效。",
+                    "降低摩擦：简化下单路径（购物车提醒/一键复购/推荐尺码），减少流失。",
+                    "服务补偿：若历史客单/订单较高，可尝试客服关怀+补偿券挽回。",
+                ],
+            },
+        ]
 
     # ---- 用户特征统计：分位数 + 区间分布 ----
     stats_summary = {}
@@ -2061,10 +2403,12 @@ def segment_overview():
         validation_notes=validation_notes,
         radar_html=radar_html,
         heatmap_html=heatmap_html,
+        cluster01=cluster01,
         high_value_def=high_value_def,
         high_value_common=high_value_common,
         high_value_users=high_value_users,
         high_value_cluster_dist=high_value_cluster_dist,
+        high_value_cluster01_dist=high_value_cluster01_dist,
         churn_def=churn_def,
         churn_rule_count=churn_rule_count,
         churn90_count=churn90_count,
@@ -2074,6 +2418,12 @@ def segment_overview():
         engage_summary=engage_summary,
         engage_cluster_dist=engage_cluster_dist,
         engage_high_value_overlap=engage_high_value_overlap,
+        engage_cluster01_dist=engage_cluster01_dist,
+        engage_overlap_matrix=engage_overlap_matrix,
+        engage_top_fav=engage_top_fav,
+        engage_top_users=engage_top_users,
+        engage_subgroup_quantiles=engage_subgroup_quantiles,
+        engage_strategies=engage_strategies,
         stats_summary=stats_summary,
     )
 
