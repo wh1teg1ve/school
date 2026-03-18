@@ -33,6 +33,107 @@
     </div>
   </div>
 
+  <div class="section">
+    <h2>核心数据可视化补充（分布与偏好）</h2>
+    <p class="section-desc">补充特征分布与偏好分布，避免仅用均值导致结论偏差。</p>
+    <div class="grid2">
+      <div>
+        <h3 style="margin:0 0 6px;font-size:1.0em;">偏好品类分布（各群体：Top3 内 Top5）</h3>
+        {% if category_dist_html %}
+          {{ category_dist_html | safe }}
+        {% else %}
+          <p class="sub">缺少 Favorite_Product，无法绘制偏好品类分布图。</p>
+        {% endif %}
+      </div>
+      <div>
+        <h3 style="margin:0 0 6px;font-size:1.0em;">关键特征箱线图（按群体）</h3>
+        {% if boxplot_html %}
+          {{ boxplot_html | safe }}
+        {% else %}
+          <p class="sub">缺少关键数值列，无法绘制箱线图。</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>聚类效果验证补充（显著性检验 + 效应量）</h2>
+    <p class="section-desc">使用 Kruskal-Wallis 检验不同群体在关键指标上的差异是否显著，并报告近似效应量（η²）。</p>
+    {% if significance_notes %}
+      <div class="table-wrap">
+        <table class="table-dense table-small">
+          <thead><tr><th class="left">指标</th><th>H</th><th>p-value</th><th>η²(近似)</th></tr></thead>
+          <tbody>
+            {% for x in significance_notes %}
+            <tr>
+              <td class="left">{{ x.metric }}</td>
+              <td>{{ "%.3f"|format(x.H) }}</td>
+              <td>{{ "%.3g"|format(x.p) }}</td>
+              <td>{{ x.eta2 }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <p class="sub" style="margin-top:8px;">提示：p-value 越小代表群体差异越显著；η² 越大代表差异解释力越强（适合论文说明“聚类有效”）。</p>
+    {% else %}
+      <p class="sub">当前缺少足够数据或依赖，未生成显著性检验结果。</p>
+    {% endif %}
+  </div>
+
+  <div class="section">
+    <h2>策略落地与验证方案（成本 / 预期效果 / 步骤 / A-B）</h2>
+    <p class="section-desc">将分群结果转为可执行的运营动作，并提供小范围验证方案，保证策略可落地、可评估、可迭代。</p>
+    {% if strategy_playbook %}
+      <div class="seg-meta wraptext">
+        <span class="label">关键效果指标（KPI）：</span>
+        {% for k in strategy_playbook.kpis %}
+          <span class="pill">{{ k }}</span>
+        {% endfor %}
+      </div>
+
+      <div class="seg-meta wraptext" style="margin-top:10px;">
+        <span class="label">成本口径：</span>
+        <ul class="analysis-list" style="margin-top:8px;">
+          {% for t in strategy_playbook.cost_notes %}
+            <li>{{ t }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+
+      <div class="seg-meta wraptext" style="margin-top:10px;">
+        <span class="label">落地步骤：</span>
+        <ol style="margin:8px 0 0 18px;">
+          {% for t in strategy_playbook.steps %}
+            <li style="margin:4px 0;">{{ t }}</li>
+          {% endfor %}
+        </ol>
+      </div>
+
+      <div class="seg-meta" style="margin-top:10px;">
+        <span class="label">A/B 小范围验证方案：</span>
+        <div class="table-wrap" style="margin-top:8px;">
+          <table class="table-dense table-small">
+            <thead><tr><th class="left">实验主题</th><th>A 组</th><th>B 组</th><th>核心指标</th><th>周期</th></tr></thead>
+            <tbody>
+              {% for x in strategy_playbook.ab_plan %}
+              <tr>
+                <td class="left">{{ x.name }}</td>
+                <td class="left">{{ x.A }}</td>
+                <td class="left">{{ x.B }}</td>
+                <td class="left">{{ x.metric }}</td>
+                <td>{{ x.duration }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    {% else %}
+      <p class="sub">暂无策略落地模板。</p>
+    {% endif %}
+  </div>
+
   <div id="table" class="section">
     <h2>群体概览（卡片版：无需横向滚动）</h2>
     <p class="section-desc">点击“群体名称”可跳转回首页并自动筛选该群体；点击样本客户可进入客户详情页。该版式把信息拆成卡片，避免表格过宽必须滚动。</p>
@@ -88,61 +189,47 @@
   </div>
 
   <div class="section">
-    <h2>一、Cluster 0 vs Cluster 1 核心特征对比（分位数/中位数为主）</h2>
-    <p class="section-desc">该模块专门回答“聚类 0 和 1 的核心区别是什么”，用中位数与 25/75 分位避免均值受极端值影响。</p>
-    {% if cluster01 and cluster01.enabled %}
-      <div class="cards">
-        <div class="card"><strong>Cluster 0 人数</strong><div class="v">{{ cluster01.counts.c0 }}</div></div>
-        <div class="card"><strong>Cluster 1 人数</strong><div class="v">{{ cluster01.counts.c1 }}</div></div>
-        <div class="card"><strong>Cluster 0 业务命名</strong><div class="v">{{ cluster01.labels.c0 }}</div></div>
-        <div class="card"><strong>Cluster 1 业务命名</strong><div class="v">{{ cluster01.labels.c1 }}</div></div>
-      </div>
+    <h2>一、五类群体差异化运营规划（论文主线）</h2>
+    <p class="section-desc">你当前是 5 个聚类，因此这里以 5 类群体为主，给出每个群体的定位、关键特征与可落地策略（可直接写论文与答辩）。</p>
+    {% if segment_plans %}
+      <div class="seg-grid">
+        {% for p in segment_plans %}
+          <div class="seg-card">
+            <div class="seg-title">
+              <div class="name"><span class="pill">{{ p.segment }}</span></div>
+              <div class="tag">{{ p.biz_name }}</div>
+            </div>
+            <div class="seg-kv">
+              <div><div class="k">人数 / 占比</div><div class="v">{{ p.count }}（{{ p.pct }}%）</div></div>
+              <div><div class="k">总消费均值</div><div class="v">{{ p.sales_avg }}</div></div>
+              <div><div class="k">订单数均值</div><div class="v">{{ p.orders_avg }}</div></div>
+              <div><div class="k">购买频率均值</div><div class="v">{{ p.freq_avg }}</div></div>
+              <div><div class="k">用户平均订单价格均值</div><div class="v">{{ p.aov_avg }}</div></div>
+              <div><div class="k">>90天未购</div><div class="v">{{ p.churn90 }}</div></div>
+            </div>
 
-      <div class="table-wrap" style="margin-top:10px;">
-        <table class="table-dense table-small">
-          <thead>
-            <tr>
-              <th class="left">指标</th>
-              <th>Cluster 0（25%/50%/75%）</th>
-              <th>Cluster 1（25%/50%/75%）</th>
-              <th>中位数差异（0-1）</th>
-              <th>中位数倍数（0/1）</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for r in cluster01.rows %}
-              <tr>
-                <td class="left">{{ r.label }}</td>
-                <td>
-                  {% if r.c0.p25 is not none %}{{ "%.2f"|format(r.c0.p25) }} / {{ "%.2f"|format(r.c0.p50) }} / {{ "%.2f"|format(r.c0.p75) }}{% else %}-{% endif %}
-                </td>
-                <td>
-                  {% if r.c1.p25 is not none %}{{ "%.2f"|format(r.c1.p25) }} / {{ "%.2f"|format(r.c1.p50) }} / {{ "%.2f"|format(r.c1.p75) }}{% else %}-{% endif %}
-                </td>
-                <td>{% if r.delta_median is not none %}{{ "%.2f"|format(r.delta_median) }}{% else %}-{% endif %}</td>
-                <td>{% if r.ratio_median is not none %}{{ "%.2f"|format(r.ratio_median) }}×{% else %}-{% endif %}</td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
+            {% if p.top3 %}
+            <div class="seg-meta wraptext" style="margin-top:8px;">
+              <span class="label">Top3 偏好品类（出现在用户Top3中次数）：</span>
+              {% for k, v in p.top3.items() %}
+                <span class="pill">{{ k }}：{{ v }}</span>
+              {% endfor %}
+            </div>
+            {% endif %}
 
-      <div class="seg-meta wraptext" style="margin-top:10px;">
-        <span class="label">差异化策略（群体级）：</span>
-        <ul class="analysis-list" style="margin-top:8px;">
-          {% for s in cluster01.strategies %}
-            <li><strong>{{ s.cluster }}（{{ s.name }}）</strong>
-              <ul>
-                {% for it in s.lines %}
-                  <li>{{ it }}</li>
+            <div class="seg-meta wraptext" style="margin-top:8px;">
+              <span class="label">策略建议：</span>
+              <ul class="analysis-list" style="margin-top:6px;">
+                {% for t in p.lines %}
+                  <li>{{ t }}</li>
                 {% endfor %}
               </ul>
-            </li>
-          {% endfor %}
-        </ul>
+            </div>
+          </div>
+        {% endfor %}
       </div>
     {% else %}
-      <p class="sub">当前数据未同时包含 Cluster=0 与 Cluster=1，因此无法生成该对比模块。</p>
+      <p class="sub">暂无可用的五群体策略规划。</p>
     {% endif %}
   </div>
 

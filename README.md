@@ -137,6 +137,10 @@ python flask_app.py
 python build_rfmbc_features.py
 ```
 
+产物（部分）：
+- `customer_features_rfmbc.csv`：用户级特征表（含 Ref_Date / Last_Purchase_Date 等可复现口径字段）
+- `data_preprocess_report.json`：数据预处理摘要（缺失值统计、参考日期等，便于论文引用）
+
 - 生成聚类对比实验结果：
 
 ```bash

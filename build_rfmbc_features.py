@@ -21,6 +21,7 @@ def _clean_sales(series: pd.Series) -> pd.Series:
 def main() -> None:
     from sklearn.cluster import KMeans
     from sklearn.preprocessing import MinMaxScaler
+    import json
 
     # low_memory=False 避免混合类型列导致 dtype 推断警告
     raw = pd.read_csv("E_commerce.csv", low_memory=False)
@@ -29,9 +30,17 @@ def main() -> None:
     raw["Sales"] = _clean_sales(raw["Sales"])
     raw["Browsing Time (min)"] = pd.to_numeric(raw["Browsing Time (min)"], errors="coerce")
 
+    # ---------- 数据预处理摘要（用于论文“数据来源与预处理”可复现说明） ----------
+    preprocess_report = {
+        "raw_shape": [int(raw.shape[0]), int(raw.shape[1])],
+        "missing_by_col_before": {k: int(v) for k, v in raw.isna().sum().to_dict().items()},
+    }
+
     raw["Sales"] = raw["Sales"].fillna(raw["Sales"].median())
     raw["Browsing Time (min)"] = raw["Browsing Time (min)"].fillna(raw["Browsing Time (min)"].median())
     raw["Order Date"] = raw["Order Date"].fillna(raw["Order Date"].mode(dropna=True)[0])
+
+    preprocess_report["missing_total_after_core_fill"] = int(raw[["Sales", "Browsing Time (min)", "Order Date"]].isna().sum().sum())
 
     id_col = "Customer ID"
     name_col = "Customer Name"
@@ -41,6 +50,14 @@ def main() -> None:
 
     ref_date = raw[date_col].max()
     g = raw.sort_values([id_col, date_col]).copy()
+
+    # 订单月份偏好（行为模式）：取全周期订单月份众数
+    g["_order_month"] = g[date_col].dt.month.astype("Int64")
+    pref_order_month = (
+        g.groupby(id_col)["_order_month"]
+        .agg(lambda x: int(x.mode(dropna=True).iloc[0]) if not x.mode(dropna=True).empty else None)
+        .astype("Int64")
+    )
 
     # ---------- 画像基础字段（供 Flask 展示使用） ----------
     first_date = g.groupby(id_col)[date_col].min()
@@ -73,6 +90,15 @@ def main() -> None:
         .groupby(id_col).head(1).set_index(id_col)[cat_col]
         .astype(str)
     )
+
+    # 偏好品类 Top3（行为模式对比）：用“品类:占比%”拼成字符串，便于页面展示
+    cat_counts2 = g.groupby([id_col, cat_col]).size().rename("cnt").reset_index()
+    cat_totals2 = cat_counts2.groupby(id_col)["cnt"].sum()
+    cat_sorted2 = cat_counts2.sort_values([id_col, "cnt"], ascending=[True, False])
+    top3 = cat_sorted2.groupby(id_col).head(3).copy()
+    top3["ratio"] = top3.apply(lambda r: float(r["cnt"]) / float(cat_totals2.loc[r[id_col]]) if r[id_col] in cat_totals2.index else 0.0, axis=1)
+    top3["piece"] = top3[cat_col].astype(str) + ":" + (top3["ratio"] * 100).round(1).astype(str) + "%"
+    top3_str = top3.groupby(id_col)["piece"].apply(lambda s: "、".join(s.tolist()))
 
     purchase_frequency = (total_orders / (customer_lifetime_days.replace(0, np.nan))).fillna(0.0).astype(float)
 
@@ -121,10 +147,13 @@ def main() -> None:
                 "Ref_Date": pd.Series([ref_date] * len(total_orders), index=total_orders.index),
                 # Last_Purchase_Date：每个客户最后一次下单日期（真实日期）
                 "Last_Purchase_Date": last_date,
+                # 行为模式字段（用于群体对比/论文阐述）
+                "Pref_Order_Month": pref_order_month,
                 "Purchase_Frequency": purchase_frequency,
                 "Avg_Browsing_Time": avg_browsing_time,
                 "Unique_Products_Purchased": unique_products_purchased,
                 "Favorite_Product": fav_cat,
+                "Favorite_Top3": top3_str,
                 "Total_Likes": total_likes,
                 "Total_Shares": total_shares,
                 "Total_Add_to_Cart": total_add_to_cart,
@@ -199,10 +228,12 @@ def main() -> None:
         "Days_Since_Last_Purchase",
         "Ref_Date",
         "Last_Purchase_Date",
+        "Pref_Order_Month",
         "Purchase_Frequency",
         "Avg_Browsing_Time",
         "Unique_Products_Purchased",
         "Favorite_Product",
+        "Favorite_Top3",
         "Total_Likes",
         "Total_Shares",
         "Total_Add_to_Cart",
@@ -224,6 +255,18 @@ def main() -> None:
     out_path = "customer_features_rfmbc.csv"
     out.to_csv(out_path, index=False)
     print(f"已生成：{out_path} shape={out.shape}")
+
+    # 输出预处理报告，便于论文复现引用
+    preprocess_report.update(
+        {
+            "ref_date": str(ref_date.date()) if hasattr(ref_date, "date") else str(ref_date),
+            "customers": int(out.shape[0]),
+            "output_columns": int(out.shape[1]),
+        }
+    )
+    with open("data_preprocess_report.json", "w", encoding="utf-8") as f:
+        json.dump(preprocess_report, f, ensure_ascii=False, indent=2)
+    print("已生成：data_preprocess_report.json")
 
 
 if __name__ == "__main__":

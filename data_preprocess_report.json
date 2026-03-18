@@ -1,0 +1,39 @@
+{
+  "raw_shape": [
+    51289,
+    27
+  ],
+  "missing_by_col_before": {
+    "Customer ID": 0,
+    "Customer Name": 0,
+    "Segment": 0,
+    "City": 0,
+    "State": 0,
+    "Country": 0,
+    "Region": 74,
+    "Gender": 0,
+    "Age": 0,
+    "Education": 0,
+    "Marital Status": 0,
+    "Order ID": 0,
+    "Order Date": 0,
+    "Months": 0,
+    "Ship Mode": 0,
+    "Product Category": 0,
+    "Product": 0,
+    "Sales": 1,
+    "Quantity": 1,
+    "Discount": 0,
+    "Profit": 0,
+    "Shipping Cost": 0,
+    "Order Priority": 2,
+    "Browsing Time (min)": 0,
+    "Like": 0,
+    "Share": 0,
+    "Add to Cart": 0
+  },
+  "missing_total_after_core_fill": 0,
+  "ref_date": "2024-12-31",
+  "customers": 795,
+  "output_columns": 33
+}

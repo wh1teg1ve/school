@@ -149,6 +149,9 @@ def create_individual_profiles(df: pd.DataFrame) -> pd.DataFrame:
             "Engagement_Score": engagement_score,
             # 为兼容不同数据源/论文表述，这里同时保留“互动总分”原字段名
             "Total_Engagement_Score": engagement_score,
+            # 行为模式字段（来自特征工程脚本）
+            "Pref_Order_Month": row.get("Pref_Order_Month", None),
+            "Favorite_Top3": row.get("Favorite_Top3", None),
             "Segment": row.get("Segment", None),
             "Region": row.get("Region", None),
             "Country": row.get("Country", None),
@@ -1936,6 +1939,279 @@ def segment_overview():
     def _num(s: pd.Series) -> pd.Series:
         return pd.to_numeric(s, errors="coerce")
 
+    # ---- 行为模式对比：偏好品类 Top3 分布（按群体）----
+    category_dist_html = ""
+    if "Favorite_Top3" in df.columns and seg_col in df.columns:
+        # Favorite_Top3 形如："Fashion:65.2%、Electronic:20.1%、Home & Furniture:14.7%"
+        # 这里统计“出现在 Top3 中的品类”出现次数（按用户计数），更能反映多样性。
+        pairs = []
+        for _, r in df[[seg_col, "Favorite_Top3"]].iterrows():
+            seg = str(r.get(seg_col))
+            s = r.get("Favorite_Top3")
+            if s is None or (isinstance(s, float) and pd.isna(s)):
+                continue
+            text = str(s).strip()
+            if not text:
+                continue
+            for part in text.split("、"):
+                part = part.strip()
+                if not part:
+                    continue
+                cat = part.split(":", 1)[0].strip()
+                if cat:
+                    pairs.append((seg, cat))
+        if pairs:
+            tmp = pd.DataFrame(pairs, columns=[seg_col, "Category"])
+            topn = (
+                tmp.groupby([seg_col, "Category"])
+                .size()
+                .rename("cnt")
+                .reset_index()
+                .sort_values([seg_col, "cnt"], ascending=[True, False])
+                .groupby(seg_col)
+                .head(5)
+            )
+            if not topn.empty:
+                from plotly.subplots import make_subplots
+
+                segs = [str(k) for k in topn[seg_col].astype(str).unique().tolist()]
+                nrows = max(1, len(segs))
+                fig_cat = make_subplots(
+                    rows=nrows,
+                    cols=1,
+                    shared_xaxes=False,
+                    shared_yaxes=False,
+                    vertical_spacing=0.08,
+                    subplot_titles=[f"{s}（Top3 内 Top5 品类）" for s in segs],
+                )
+                for i, seg_name in enumerate(segs, start=1):
+                    gseg = topn[topn[seg_col].astype(str) == str(seg_name)].copy()
+                    fig_cat.add_trace(
+                        go.Bar(
+                            x=gseg["cnt"].astype(int).tolist(),
+                            y=gseg["Category"].astype(str).tolist(),
+                            orientation="h",
+                            showlegend=False,
+                            text=gseg["cnt"].astype(int).tolist(),
+                            textposition="outside",
+                            cliponaxis=False,
+                            marker=dict(color="#42a5f5"),
+                        ),
+                        row=i,
+                        col=1,
+                    )
+                    fig_cat.update_yaxes(autorange="reversed", row=i, col=1)
+                fig_cat.update_layout(
+                    height=150 * nrows + 120,
+                    margin=dict(l=140, r=60, t=60, b=40),
+                    xaxis_title="用户数（出现在 Top3 的次数）",
+                )
+                category_dist_html = fig_cat.to_html(include_plotlyjs=False, full_html=False)
+
+    # ---- 特征分布可视化：关键指标箱线图（按群体）----
+    boxplot_html = ""
+    if seg_col in df.columns:
+        fig_box = go.Figure()
+        box_metrics = [
+            ("Total_Sales", "总销售额"),
+            ("Total_Orders", "订单数"),
+            ("Avg_Order_Value", "用户平均订单价格"),
+            ("Purchase_Frequency", "购买频率"),
+            ("Total_Engagement_Score", "互动总分"),
+            ("Days_Since_Last_Purchase", "距上次购买天数"),
+        ]
+        # 下拉切换不同指标，避免一张图塞太多 trace 看不清
+        visibility_groups = []
+        for col, label in box_metrics:
+            if col not in df.columns:
+                continue
+            vis = []
+            for seg_name, gseg in df.groupby(seg_col, dropna=False):
+                fig_box.add_trace(
+                    go.Box(
+                        y=_num(gseg[col]),
+                        name=str(seg_name),
+                        boxmean=False,
+                        boxpoints="outliers",
+                        marker=dict(size=3),
+                    )
+                )
+                vis.append(True)
+            visibility_groups.append((label, vis))
+
+        # 构建 updatemenus：每次只显示一个指标的一组 traces
+        if visibility_groups:
+            total_traces = len(fig_box.data)
+            buttons = []
+            cursor = 0
+            for label, vis in visibility_groups:
+                mask = [False] * total_traces
+                for j in range(len(vis)):
+                    mask[cursor + j] = True
+                buttons.append(
+                    dict(
+                        label=label,
+                        method="update",
+                        args=[
+                            {"visible": mask},
+                            {"title": f"按群体的{label}分布（箱线图）", "yaxis": {"title": label}},
+                        ],
+                    )
+                )
+                cursor += len(vis)
+
+            # 默认显示第一个指标
+            fig_box.update_traces(visible=False)
+            for i in range(len(visibility_groups[0][1])):
+                fig_box.data[i].visible = True
+
+            fig_box.update_layout(
+                title=f"按群体的{visibility_groups[0][0]}分布（箱线图）",
+                height=460,
+                margin=dict(l=60, r=20, t=60, b=40),
+                updatemenus=[
+                    dict(
+                        type="dropdown",
+                        x=0.0,
+                        y=1.15,
+                        showactive=True,
+                        buttons=buttons,
+                    )
+                ],
+            )
+            boxplot_html = fig_box.to_html(include_plotlyjs=False, full_html=False)
+
+    # ---- 显著性检验：群体差异（Kruskal-Wallis）+ 效应量（eta^2）----
+    significance_notes = []
+    try:
+        from scipy import stats
+
+        def _eta2_kw(H: float, k: int, n: int) -> float:
+            denom = max(1, (n - k))
+            return max(0.0, float(H - k + 1) / float(denom))
+
+        test_cols = [
+            ("Total_Sales", "总销售额"),
+            ("Total_Orders", "订单数"),
+            ("Purchase_Frequency", "购买频率"),
+            ("Total_Engagement_Score", "互动总分"),
+            ("Days_Since_Last_Purchase", "距上次购买天数"),
+        ]
+        for col, label in test_cols:
+            if col not in df.columns:
+                continue
+            groups = []
+            for _seg, gseg in df.groupby(seg_col, dropna=False):
+                v = _num(gseg[col]).dropna()
+                if len(v) >= 5:
+                    groups.append(v.values)
+            if len(groups) < 2:
+                continue
+            H, p = stats.kruskal(*groups, nan_policy="omit")
+            eta2 = _eta2_kw(float(H), k=len(groups), n=int(len(df)))
+            significance_notes.append({"metric": label, "p": float(p), "H": float(H), "eta2": round(eta2, 4)})
+        significance_notes.sort(key=lambda x: x["p"])
+        significance_notes = significance_notes[:6]
+    except Exception:
+        significance_notes = []
+
+    # ---- 策略落地：成本/效果/步骤/A-B 验证（页面直接引用）----
+    strategy_playbook = {
+        "kpis": [
+            "复购率（30/60/90天）",
+            "留存率（30/60/90天）",
+            "客单价（AOV）",
+            "转化率（互动→下单）",
+            "召回转化率（流失人群）",
+            "ROI（增量销售额/优惠成本）",
+        ],
+        "steps": [
+            "群体识别：按 Cluster_Label/Cluster + 阈值规则生成目标人群包",
+            "策略配置：为不同群体设置权益/券/触达频次与渠道",
+            "投放执行：站内信/短信/Push/邮件（按成本与触达效果选择）",
+            "效果回收：对比投放前后 KPI，并记录成本",
+            "迭代优化：基于 A/B 结果调整券力度与触达频次",
+        ],
+        "ab_plan": [
+            {"name": "召回券力度", "A": "5元无门槛券", "B": "满100减15", "metric": "7天召回下单率/ROI", "duration": "2-4周"},
+            {"name": "触达频次", "A": "每周1次", "B": "每周2次", "metric": "退订/投诉率与转化率", "duration": "2-4周"},
+            {"name": "内容类型", "A": "品类推荐", "B": "组合购/搭配购", "metric": "客单价提升", "duration": "2-4周"},
+        ],
+        "cost_notes": [
+            "优惠券成本：券面额×核销人数（可控成本）",
+            "权益成本：客服/物流/会员权益（偏长期投入）",
+            "触达成本：短信/Push/邮件成本（按渠道计费）",
+        ],
+    }
+
+    # ---- 五群体策略规划：每个聚类一套策略（用于论文主线）----
+    segment_plans = []
+    for s in segments:
+        name = str(s.get("name"))
+        biz = str(s.get("biz_name") or "")
+        base = {
+            "segment": name,
+            "biz_name": biz,
+            "count": s.get("count"),
+            "pct": s.get("pct"),
+            "churn90": s.get("churn90_pct"),
+            "sales_avg": s.get("sales_avg"),
+            "orders_avg": s.get("orders_avg"),
+            "freq_avg": s.get("freq_avg"),
+            "aov_avg": s.get("aov_avg"),
+            "top3": None,
+            "lines": [],
+        }
+        # 群体偏好 Top3（从 Favorite_Top3 的“出现次数”统计）
+        if "Favorite_Top3" in df.columns and seg_col in df.columns:
+            subset = df[df[seg_col].astype(str) == name]
+            pairs = []
+            for txt in subset["Favorite_Top3"].dropna().astype(str).tolist():
+                for part in str(txt).split("、"):
+                    part = part.strip()
+                    if not part:
+                        continue
+                    cat = part.split(":", 1)[0].strip()
+                    if cat:
+                        pairs.append(cat)
+            if pairs:
+                vc = pd.Series(pairs).value_counts().head(3).to_dict()
+                base["top3"] = vc
+
+        # 策略规则：优先按业务命名/标签关键词判断
+        tag = (biz + " " + name)
+        if ("高价值" in tag) and ("流失" not in tag) and ("挽留" not in tag):
+            base["lines"] = [
+                "会员权益与体验：专属客服/优先配送/会员日，目标是维持留存与复购。",
+                "提升客单：组合购/加价购/订阅购，围绕常购品类做个性化推荐。",
+                "口碑裂变：评价有礼、邀请试用、内容共创，提高传播与复购。",
+            ]
+        elif ("高价值" in tag) and ("挽留" in tag or "流失" in tag or "潜在流失" in tag):
+            base["lines"] = [
+                "召回优先：限时回流券+免邮，按常购品类个性化触达。",
+                "服务关怀：客服关怀+补偿券，降低再次购买摩擦。",
+                "分层频次：7/30/60 天触达节奏，避免过度打扰导致反感。",
+            ]
+        elif "中高价值" in tag:
+            base["lines"] = [
+                "忠诚度计划：积分、满减、会员成长体系，推动向高价值迁移。",
+                "内容驱动复购：新品种草/搭配推荐，提高频率与客单。",
+                "A/B 优惠力度：对比不同券力度的 ROI，选择最优策略。",
+            ]
+        elif "中等价值" in tag:
+            base["lines"] = [
+                "促活转化：加购券/首单券/限时活动，提高转化与频次。",
+                "降低决策成本：热销榜+同类替代推荐，提升下单效率。",
+                "培养偏好：围绕 Top3 品类做连续触达，形成稳定复购。",
+            ]
+        else:
+            base["lines"] = [
+                "低成本触达：内容与活动为主（免邮门槛、满减），控制补贴。",
+                "激活路径：站内任务/优惠引导完成首次或二次购买。",
+                "识别潜力：对高互动但低价值者重点做转化实验。",
+            ]
+        segment_plans.append(base)
+
     # ---- Cluster 0 vs Cluster 1：分位数对比 + 业务命名 + 策略 ----
     # 说明：开题/论文里常需要对“两个主要聚类”做更细的统计（中位数/分位数），避免只看均值。
     cluster01 = {
@@ -2403,6 +2679,11 @@ def segment_overview():
         validation_notes=validation_notes,
         radar_html=radar_html,
         heatmap_html=heatmap_html,
+        category_dist_html=category_dist_html,
+        boxplot_html=boxplot_html,
+        significance_notes=significance_notes,
+        strategy_playbook=strategy_playbook,
+        segment_plans=segment_plans,
         cluster01=cluster01,
         high_value_def=high_value_def,
         high_value_common=high_value_common,
