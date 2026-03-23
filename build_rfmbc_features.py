@@ -241,16 +241,53 @@ def main() -> None:
     ]
     out = pd.concat([features[keep_base].reset_index(drop=True), X_mm], axis=1)
 
-    km = KMeans(n_clusters=5, random_state=42, n_init=10)
+    # 使用实验中 Silhouette 最优的 K=3 进行最终分群
+    km = KMeans(n_clusters=3, random_state=42, n_init=10)
     out["Cluster"] = km.fit_predict(out[[c for c in out.columns if c.endswith("_MM")]].values)
-    label_map = {
-        0: "高价值客户群",
-        1: "低价值客户群",
-        2: "中高价值客户群",
-        3: "中等价值客户群",
-        4: "低价值潜在流失客户群",
-    }
-    out["Cluster_Label"] = out["Cluster"].map(label_map).fillna(out["Cluster"].astype(str))
+
+    # 为避免“KMeans 簇编号是任意的导致标签错配”，这里改为数据驱动命名：
+    # 1) 先用 Days_Since_Last_Purchase 找出“潜在流失”簇（>60 天未购比例最高）
+    # 2) 再在剩余簇里按 Total_Sales（中位数）从高到低分配高/中高/中等/低价值标签
+    cluster_stats = (
+        out.groupby("Cluster")
+        .agg(
+            total_sales_median=("Total_Sales", "median"),
+            days_since_mean=("Days_Since_Last_Purchase", "mean"),
+            churn_rate=("Days_Since_Last_Purchase", lambda s: float((s > 60).mean())),
+        )
+        .reset_index()
+    )
+
+    # 潜在流失簇：优先 churn_rate 最大；如果所有簇 churn_rate 都为 0，则退而选 days_since_mean 最大
+    churn_row = cluster_stats.sort_values(
+        ["churn_rate", "days_since_mean"], ascending=[False, False]
+    ).iloc[0]
+    churn_cluster = int(churn_row["Cluster"])
+    if float(churn_row["churn_rate"]) <= 0:
+        churn_cluster = int(
+            cluster_stats.sort_values("days_since_mean", ascending=False).iloc[0]["Cluster"]
+        )
+
+    remaining_clusters = [int(c) for c in sorted(out["Cluster"].unique()) if int(c) != churn_cluster]
+    remaining_sorted = sorted(
+        remaining_clusters,
+        key=lambda c: float(
+            cluster_stats.loc[cluster_stats["Cluster"] == c, "total_sales_median"].iloc[0]
+        ),
+        reverse=True,
+    )
+
+    mapped_labels: dict[int, str] = {churn_cluster: "低价值潜在流失客户群"}
+    other_labels = [
+        "高价值客户群",
+        "中高价值客户群",
+        "中等价值客户群",
+        "低价值客户群",
+    ]
+    for i, c in enumerate(remaining_sorted):
+        mapped_labels[int(c)] = other_labels[i] if i < len(other_labels) else str(c)
+
+    out["Cluster_Label"] = out["Cluster"].map(mapped_labels).fillna(out["Cluster"].astype(str))
 
     out_path = "customer_features_rfmbc.csv"
     out.to_csv(out_path, index=False)

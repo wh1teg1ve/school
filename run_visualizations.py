@@ -12,15 +12,66 @@ def main() -> None:
     df = pd.read_csv(CSV_PATH)
 
     # 补全 Cluster_Label（若 CSV 无此列）
+    # 说明：KMeans 簇编号是任意的，所以不能再用“固定 id -> 固定标签”的硬编码。
     if "Cluster_Label" not in df.columns and "Cluster" in df.columns:
-        labels = {
-            0: "高价值客户群",
-            1: "低价值客户群",
-            2: "中高价值客户群",
-            3: "中等价值客户群",
-            4: "低价值潜在流失客户群",
-        }
-        df["Cluster_Label"] = df["Cluster"].map(labels)
+        required_for_auto = {"Days_Since_Last_Purchase", "Total_Sales"}
+        if required_for_auto.issubset(set(df.columns)):
+            cluster_stats = (
+                df.groupby("Cluster")
+                .agg(
+                    total_sales_median=("Total_Sales", "median"),
+                    days_since_mean=("Days_Since_Last_Purchase", "mean"),
+                    churn_rate=("Days_Since_Last_Purchase", lambda s: float((s > 60).mean())),
+                )
+                .reset_index()
+            )
+            churn_row = cluster_stats.sort_values(
+                ["churn_rate", "days_since_mean"], ascending=[False, False]
+            ).iloc[0]
+            churn_cluster = int(churn_row["Cluster"])
+            if float(churn_row["churn_rate"]) <= 0:
+                churn_cluster = int(
+                    cluster_stats.sort_values(
+                        "days_since_mean", ascending=False
+                    ).iloc[0]["Cluster"]
+                )
+
+            remaining_clusters = [
+                int(c) for c in sorted(df["Cluster"].unique()) if int(c) != churn_cluster
+            ]
+            remaining_sorted = sorted(
+                remaining_clusters,
+                key=lambda c: float(
+                    cluster_stats.loc[cluster_stats["Cluster"] == c, "total_sales_median"].iloc[0]
+                ),
+                reverse=True,
+            )
+
+            mapped_labels: dict[int, str] = {churn_cluster: "低价值潜在流失客户群"}
+            other_labels = [
+                "高价值客户群",
+                "中高价值客户群",
+                "中等价值客户群",
+                "低价值客户群",
+            ]
+            for i, c in enumerate(remaining_sorted):
+                mapped_labels[int(c)] = other_labels[i] if i < len(other_labels) else str(c)
+
+            df["Cluster_Label"] = df["Cluster"].map(mapped_labels).fillna(
+                df["Cluster"].astype(str)
+            )
+        else:
+            # 退而求其次：无法自动命名时，采用旧的硬编码（仅用于尽量不报错）
+            fallback = {
+                0: "高价值客户群",
+                1: "低价值客户群",
+                2: "中高价值客户群",
+                3: "中等价值客户群",
+                4: "低价值潜在流失客户群",
+            }
+            df["Cluster_Label"] = df["Cluster"].map(fallback).fillna(
+                df["Cluster"].astype(str)
+            )
 
     cluster_col = "Cluster_Label" if "Cluster_Label" in df.columns else "Cluster"
 

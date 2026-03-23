@@ -22,8 +22,9 @@ from sklearn.metrics import silhouette_score, calinski_harabasz_score
 
 
 DATA_CSV = "customer_features_rfmbc.csv"
-# 开题报告中希望的对比聚类数 K=5；若设为 None，则自动选用轮廓系数最优的 K
-K_FOR_COMPARE = 5
+# 用 Silhouette（轮廓系数）在 K∈{3,4,5,6} 上选出的最优 K=3。
+# 这里用于“算法对比展示”的固定 K；不影响 build_rfmbc_features.py 里最终生成使用的 K。
+K_FOR_COMPARE = 3
 
 # 与 notebook 中保持一致的“标准特征名”到多个可能列名的映射，便于兼容不同版本的数据
 FEATURE_ALIASES = {
@@ -265,7 +266,7 @@ def main() -> None:
     print(f"    Silhouette={sil_str}, CH={ch_str}, "
           f"耗时={cmp['dbscan']['time_sec']:.3f}s, 簇数={cmp['dbscan']['n_clusters']}, "
           f"噪声={cmp['dbscan']['noise_ratio_pct']:.1f}%")
-    print("\n  业务解读性: K-Means 簇数固定、标签稳定，适合直接定义 5 类用户群体；"
+    print("\n  业务解读性: K-Means 簇数固定、标签稳定，适合直接定义 K 类用户群体；"
           "DBSCAN 自动发现簇数，噪声点需单独处理。")
     print("=" * 60)
 

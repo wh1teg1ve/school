@@ -135,7 +135,7 @@
   </div>
 
   <div id="table" class="section">
-    <h2>群体概览（卡片版：无需横向滚动）</h2>
+    <h2>群体概览</h2>
     <p class="section-desc">点击“群体名称”可跳转回首页并自动筛选该群体；点击样本客户可进入客户详情页。该版式把信息拆成卡片，避免表格过宽必须滚动。</p>
 
     <div class="seg-grid">
@@ -189,8 +189,8 @@
   </div>
 
   <div class="section">
-    <h2>一、五类群体差异化运营规划（论文主线）</h2>
-    <p class="section-desc">你当前是 5 个聚类，因此这里以 5 类群体为主，给出每个群体的定位、关键特征与可落地策略（可直接写论文与答辩）。</p>
+    <h2>一、{{ segment_count }}类群体差异化运营规划</h2>
+    <p class="section-desc">根据当前聚类得到 {{ segment_count }} 个群体，本文给出每个群体的定位、关键特征与可落地策略（可直接写论文与答辩）。</p>
     {% if segment_plans %}
       <div class="seg-grid">
         {% for p in segment_plans %}
@@ -229,7 +229,7 @@
         {% endfor %}
       </div>
     {% else %}
-      <p class="sub">暂无可用的五群体策略规划。</p>
+      <p class="sub">暂无可用的群体策略规划。</p>
     {% endif %}
   </div>
 
@@ -259,15 +259,6 @@
         {% endfor %}
         {% if not high_value_cluster_dist %}<span class="sub">暂无</span>{% endif %}
       </div>
-
-      {% if high_value_cluster01_dist %}
-      <div class="seg-meta wraptext" style="margin-top:8px;">
-        <span class="label">高价值用户在 Cluster 0/1 的分布：</span>
-        {% for x in high_value_cluster01_dist %}
-          <span class="pill">Cluster {{ x.cluster }}：{{ x.count }}（{{ x.pct }}%）</span>
-        {% endfor %}
-      </div>
-      {% endif %}
 
       <div class="seg-meta" style="margin-top:10px;">
         <span class="label">高价值用户 Top5（示例）：</span>
@@ -356,14 +347,6 @@
         {% endfor %}
       </div>
 
-      {% if engage_cluster01_dist %}
-      <div class="seg-meta wraptext" style="margin-top:8px;">
-        <span class="label">高互动用户在 Cluster 0/1 的分布：</span>
-        {% for x in engage_cluster01_dist %}
-          <span class="pill">Cluster {{ x.cluster }}：{{ x.count }}（{{ x.pct }}%）</span>
-        {% endfor %}
-      </div>
-      {% endif %}
       <div class="seg-meta wraptext" style="margin-top:8px;">
         <span class="label">高互动→高价值关联：</span>
         {% if engage_high_value_overlap is not none %}

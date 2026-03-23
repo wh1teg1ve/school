@@ -72,71 +72,99 @@ def load_data(path: str = DATA_CSV_PATH) -> pd.DataFrame:
 
 def create_individual_profiles(df: pd.DataFrame) -> pd.DataFrame:
     """将原始特征表标准化为统一的用户画像表格。"""
-    profiles = []
+    # 这里避免逐行 iterrows()：字段标准化/数值转换改成向量化，显著降低 CPU 消耗。
+    idx = df.index
 
-    # 遍历原始数据的每一行，将字段名和缺失值统一为内部标准格式
-    for _, row in df.iterrows():
-        # 只在值为 None 或 NaN 时才使用默认值，避免把 0 当成缺失
-        def _safe_float(v, default: float = 0.0) -> float:
-            if v is None or (isinstance(v, float) and np.isnan(v)):
-                return float(default)
-            return float(v)
+    def _get_series(*col_names: str, default=None) -> pd.Series:
+        """从 df 中按优先级取第一个存在的列；不存在则返回默认值的同长度序列。"""
+        for c in col_names:
+            if c in df.columns:
+                return df[c]
+        return pd.Series(default, index=idx)
 
-        def _safe_int(v, default: int = 0) -> int:
-            if v is None or (isinstance(v, float) and np.isnan(v)):
-                return int(default)
-            # 兼容字符串形式的数字（如 "58" / "58.0"）
-            if isinstance(v, str):
-                s = v.strip()
-                if s == "":
-                    return int(default)
-                try:
-                    return int(float(s))
-                except Exception:
-                    return int(default)
-            try:
-                return int(v)
-            except Exception:
-                try:
-                    return int(float(v))
-                except Exception:
-                    return int(default)
+    # 数值字段：缺失/非法值 => 默认值（保留历史逻辑：最后购买“天数”允许 NaN）
+    total_sales = (
+        pd.to_numeric(_get_series("Total_Sales", default=0.0), errors="coerce")
+        .fillna(0.0)
+        .astype(float)
+    )
+    total_orders = (
+        pd.to_numeric(_get_series("Total_Orders", default=0), errors="coerce")
+        .fillna(0)
+        .astype(int)
+    )
+    avg_order_value = (
+        pd.to_numeric(_get_series("Avg_Order_Value", default=0.0), errors="coerce")
+        .fillna(0.0)
+        .astype(float)
+    )
 
-        total_sales = _safe_float(row.get("Total_Sales", 0.0), 0.0)
-        total_orders = _safe_int(row.get("Total_Orders", 0), 0)
-        avg_order_value = _safe_float(row.get("Avg_Order_Value", 0.0), 0.0)
-        lifetime_val = row.get("Customer_Lifetime_Days", row.get("Customer_Lifetime", 0))
-        customer_lifetime = _safe_float(lifetime_val, 0.0)
-        purchase_freq = _safe_float(row.get("Purchase_Frequency", 0.0), 0.0)
-        profit_margin = _safe_float(row.get("Profit_Margin", 0.0), 0.0)
+    lifetime_val = _get_series(
+        "Customer_Lifetime_Days", "Customer_Lifetime", default=0.0
+    )
+    customer_lifetime = (
+        pd.to_numeric(lifetime_val, errors="coerce").fillna(0.0).astype(float)
+    )
 
-        last_purchase_raw = row.get(
-            "Days_Since_Last_Purchase", row.get("Last_Purchase_Days_Ago", np.nan)
-        )
-        if last_purchase_raw is None or (
-            isinstance(last_purchase_raw, float) and np.isnan(last_purchase_raw)
-        ):
-            last_purchase_days_ago = np.nan
-        else:
-            last_purchase_days_ago = float(last_purchase_raw)
+    purchase_freq = (
+        pd.to_numeric(_get_series("Purchase_Frequency", default=0.0), errors="coerce")
+        .fillna(0.0)
+        .astype(float)
+    )
 
-        engagement_raw = row.get(
-            "Total_Engagement_Score", row.get("Engagement_Score", 0.0)
-        )
-        engagement_score = _safe_float(engagement_raw, 0.0)
+    profit_margin = (
+        pd.to_numeric(_get_series("Profit_Margin", default=0.0), errors="coerce")
+        .fillna(0.0)
+        .astype(float)
+    )
 
-        unique_products_raw = row.get(
-            "Unique_Products_Purchased", row.get("Unique_Products_Bought", 0)
-        )
-        unique_products_bought = _safe_int(unique_products_raw, 0)
+    last_purchase_raw = _get_series(
+        "Days_Since_Last_Purchase", "Last_Purchase_Days_Ago", default=np.nan
+    )
+    # 保持历史逻辑：如果原值缺失/非法 => NaN（不是 0）
+    last_purchase_days_ago = pd.to_numeric(
+        last_purchase_raw, errors="coerce"
+    ).astype(float)
 
-        profile = {
-            "Customer_ID": row.get("Customer ID", row.get("Customer_ID", None)),
-            "Customer_Name": row.get(
-                "Customer Name", row.get("Customer_Name", "Unknown")
-            ),
-            "Cluster": row.get("Cluster", None),
-            "Cluster_Label": row.get("Cluster_Label", None),
+    engagement_raw = _get_series(
+        "Total_Engagement_Score", "Engagement_Score", default=0.0
+    )
+    engagement_score = (
+        pd.to_numeric(engagement_raw, errors="coerce").fillna(0.0).astype(float)
+    )
+
+    unique_products_raw = _get_series(
+        "Unique_Products_Purchased", "Unique_Products_Bought", default=0
+    )
+    unique_products_bought = (
+        pd.to_numeric(unique_products_raw, errors="coerce")
+        .fillna(0)
+        .astype(int)
+    )
+
+    # 兼容不同数据源的“备用列名”
+    customer_id = _get_series("Customer ID", "Customer_ID", default=None)
+    customer_name = _get_series("Customer Name", "Customer_Name", default="Unknown").copy()
+    customer_name = customer_name.fillna("Unknown")
+
+    marital_status = _get_series(
+        "Marital Status", "Marital_Status", default=None
+    )
+
+    favorite_product = _get_series("Favorite_Product", default="Unknown").copy()
+    favorite_product = favorite_product.fillna("Unknown")
+
+    # 行为模式字段（来自特征工程脚本）
+    pref_order_month = _get_series("Pref_Order_Month", default=None)
+    favorite_top3 = _get_series("Favorite_Top3", default=None)
+
+    # 组装标准化后的画像表
+    profiles = pd.DataFrame(
+        {
+            "Customer_ID": customer_id,
+            "Customer_Name": customer_name,
+            "Cluster": _get_series("Cluster", default=None),
+            "Cluster_Label": _get_series("Cluster_Label", default=None),
             "Total_Sales": total_sales,
             "Total_Orders": total_orders,
             "Avg_Order_Value": avg_order_value,
@@ -144,29 +172,27 @@ def create_individual_profiles(df: pd.DataFrame) -> pd.DataFrame:
             "Purchase_Frequency": purchase_freq,
             "Profit_Margin": profit_margin,
             "Last_Purchase_Days_Ago": last_purchase_days_ago,
-            "Last_Purchase_Date": row.get("Last_Purchase_Date", None),
-            "Ref_Date": row.get("Ref_Date", None),
+            "Last_Purchase_Date": _get_series("Last_Purchase_Date", default=None),
+            "Ref_Date": _get_series("Ref_Date", default=None),
             "Engagement_Score": engagement_score,
             # 为兼容不同数据源/论文表述，这里同时保留“互动总分”原字段名
             "Total_Engagement_Score": engagement_score,
-            # 行为模式字段（来自特征工程脚本）
-            "Pref_Order_Month": row.get("Pref_Order_Month", None),
-            "Favorite_Top3": row.get("Favorite_Top3", None),
-            "Segment": row.get("Segment", None),
-            "Region": row.get("Region", None),
-            "Country": row.get("Country", None),
-            "Gender": row.get("Gender", None),
-            "Age": row.get("Age", np.nan),
-            "Education": row.get("Education", None),
-            "Marital_Status": row.get(
-                "Marital Status", row.get("Marital_Status", None)
-            ),
-            "Favorite_Product": row.get("Favorite_Product", "Unknown"),
+            "Pref_Order_Month": pref_order_month,
+            "Favorite_Top3": favorite_top3,
+            "Segment": _get_series("Segment", default=None),
+            "Region": _get_series("Region", default=None),
+            "Country": _get_series("Country", default=None),
+            "Gender": _get_series("Gender", default=None),
+            "Age": _get_series("Age", default=np.nan),
+            "Education": _get_series("Education", default=None),
+            "Marital_Status": marital_status,
+            "Favorite_Product": favorite_product,
             "Unique_Products_Bought": unique_products_bought,
-        }
-        profiles.append(profile)
+        },
+        index=idx,
+    )
 
-    return pd.DataFrame(profiles)
+    return profiles
 
 
 def calculate_percentiles_and_rankings(
@@ -185,18 +211,6 @@ def calculate_percentiles_and_rankings(
             "Customer_Lifetime",
         ]
 
-    def get_grade(percentile: float) -> str:
-        if percentile >= 80:
-            return "A"
-        elif percentile >= 60:
-            return "B"
-        elif percentile >= 40:
-            return "C"
-        elif percentile >= 20:
-            return "D"
-        else:
-            return "E"
-
     # 针对每个指标分别计算百分位、排名、等级、与均值对比
     for metric in metrics:
         if metric in result.columns:
@@ -204,7 +218,13 @@ def calculate_percentiles_and_rankings(
             result[f"{metric}_Rank"] = result[metric].rank(
                 ascending=False, method="min"
             )
-            result[f"{metric}_Grade"] = result[f"{metric}_Percentile"].apply(get_grade)
+            # 用向量化方式替代逐行 apply，减少 Python 开销
+            p = result[f"{metric}_Percentile"]
+            result[f"{metric}_Grade"] = np.select(
+                [p >= 80, p >= 60, p >= 40, p >= 20],
+                ["A", "B", "C", "D"],
+                default="E",
+            )
             overall_mean = result[metric].mean()
             if overall_mean != 0 and not np.isnan(overall_mean):
                 result[f"{metric}_vs_Mean"] = (
@@ -313,7 +333,7 @@ def _pick_biz_name_by_segment_rank(
     freq_pos = _percentile_rank(seg_freq, all_freq, higher_better=True)
     churn_pos = _percentile_rank(seg_churn90, all_churn90, higher_better=False)
 
-    # 用更宽松阈值拉开 5 类区分度（群体数量通常不大）
+    # 用更宽松阈值拉开多类区分度（群体数量通常不大）
     def _hi(p): return p is not None and p >= 0.70
     def _lo(p): return p is not None and p <= 0.30
 
@@ -2144,7 +2164,7 @@ def segment_overview():
         ],
     }
 
-    # ---- 五群体策略规划：每个聚类一套策略（用于论文主线）----
+    # ---- 多群体策略规划：每个聚类一套策略（用于论文主线）----
     segment_plans = []
     for s in segments:
         name = str(s.get("name"))
